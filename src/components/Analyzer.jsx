@@ -23,32 +23,95 @@ const POS_KO = {
   expression: '표현', other: '기타',
 };
 
+const HISTORY_LIMIT = 20;
+const GAP_MS = 600; // 무료 티어 분당 한도에 걸리지 않게 요청 사이에 두는 간격
+const uid = () => Math.random().toString(36).slice(2, 10);
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
 export default function Analyzer({ decks, activeDeckId, savedKeys, onSave, onToast }) {
   const [text, setText] = useState('');
   const [image, setImage] = useState(null);
-  const [result, setResult] = useState(null);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState('');
+  const [jobs, setJobs] = useState([]);
+  const [tick, setTick] = useState(0);
   const [furigana, setFurigana] = useState(true);
-  const [pick, setPick] = useState(null); // { item, type, rect }
-  const areaRef = useRef(null);
+  const [pick, setPick] = useState(null);
 
-  async function run() {
+  const runningRef = useRef(false);
+  const abortRef = useRef(null);
+
+  const pending = jobs.filter((j) => j.status === 'queued' || j.status === 'running');
+  const finished = jobs.filter((j) => j.status === 'done' || j.status === 'error');
+
+  // ── 대기열 처리기 ────────────────────────────────────────
+  // 한 번에 하나씩만 돕니다. 여러 개를 한꺼번에 던지면 무료 한도에 바로 걸립니다.
+  useEffect(() => {
+    if (runningRef.current) return;
+
+    // jobs는 최신이 앞이므로, 뒤에서부터 찾으면 먼저 넣은 것이 먼저 나옵니다.
+    const next = [...jobs].reverse().find((j) => j.status === 'queued');
+    if (!next) return;
+
+    runningRef.current = true;
+    const ctrl = new AbortController();
+    abortRef.current = { id: next.id, ctrl };
+    setJobs((js) => js.map((j) => (j.id === next.id ? { ...j, status: 'running' } : j)));
+
+    (async () => {
+      let patch;
+      try {
+        const result = await analyze({ text: next.text, image: next.image, signal: ctrl.signal });
+        patch = { status: 'done', result };
+      } catch (err) {
+        patch = err.name === 'AbortError'
+          ? { status: 'cancelled' }
+          : { status: 'error', error: err.message };
+      }
+
+      abortRef.current = null;
+      setJobs((js) =>
+        patch.status === 'cancelled'
+          ? js.filter((j) => j.id !== next.id)
+          : js.map((j) => (j.id === next.id ? { ...j, ...patch } : j)),
+      );
+
+      await sleep(GAP_MS);
+      runningRef.current = false;
+      setTick((t) => t + 1); // 다음 작업을 깨웁니다
+    })();
+  }, [jobs, tick]);
+
+  function submit() {
     if (!text.trim() && !image) return;
-    setBusy(true);
-    setError('');
-    setPick(null);
-    try {
-      setResult(await analyze({ text, image: image?.inline }));
-    } catch (e) {
-      setError(e.message);
-    } finally {
-      setBusy(false);
-    }
+    const job = {
+      id: uid(),
+      text: text.trim(),
+      image: image?.inline,
+      label: text.trim() || image?.name || '이미지',
+      status: 'queued',
+    };
+    setJobs((js) => [job, ...js].slice(0, HISTORY_LIMIT));
+    setText('');
+    setImage(null);
   }
 
   function onKeyDown(e) {
-    if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') { e.preventDefault(); run(); }
+    if (e.key !== 'Enter') return;
+    // 한글·가나 입력기가 글자를 조합하는 중에 누른 Enter는 확정용이지 전송이 아닙니다.
+    if (e.nativeEvent.isComposing || e.keyCode === 229) return;
+    if (e.shiftKey) return; // 줄바꿈
+    e.preventDefault();
+    submit();
+  }
+
+  function cancel(id) {
+    if (abortRef.current?.id === id) abortRef.current.ctrl.abort();
+    else setJobs((js) => js.filter((j) => j.id !== id));
+  }
+
+  function cancelAll() {
+    const running = abortRef.current;
+    setJobs((js) => js.filter((j) => j.status !== 'queued'));
+    if (running) running.ctrl.abort();
   }
 
   // 스크린샷을 그대로 붙여넣을 수 있게. 만화 컷이나 메뉴판에 특히 잘 듣습니다.
@@ -63,7 +126,6 @@ export default function Analyzer({ decks, activeDeckId, savedKeys, onSave, onToa
     return () => window.removeEventListener('paste', onPaste);
   }, []);
 
-  // 팝오버 바깥을 누르면 닫습니다.
   useEffect(() => {
     if (!pick) return;
     const close = (e) => { if (!e.target.closest('.pop, .tok')) setPick(null); };
@@ -76,13 +138,8 @@ export default function Analyzer({ decks, activeDeckId, savedKeys, onSave, onToa
     };
   }, [pick]);
 
-  function openPick(e, item, type) {
-    const r = e.currentTarget.getBoundingClientRect();
-    setPick({ item, type, rect: r });
-  }
-
   async function save(deckId) {
-    const { item, type } = pick;
+    const { item, type, source } = pick;
     const card = type === 'grammar'
       ? {
           type: 'grammar', deckId,
@@ -96,7 +153,7 @@ export default function Analyzer({ decks, activeDeckId, savedKeys, onSave, onToa
           surface: item.lemma, reading: item.lemmaReading || item.reading,
           lemma: item.lemma, meaning: item.meaning, note: item.note || '',
           pos: item.pos, jlpt: item.jlpt || 'unknown',
-          context: result.original, contextTranslation: result.translation,
+          context: source.original, contextTranslation: source.translation,
         };
     await onSave(card);
     setPick(null);
@@ -106,11 +163,10 @@ export default function Analyzer({ decks, activeDeckId, savedKeys, onSave, onToa
     <>
       <div className="composer">
         <textarea
-          ref={areaRef}
           value={text}
           onChange={(e) => setText(e.target.value)}
           onKeyDown={onKeyDown}
-          placeholder="일본어 문장이나 단어를 붙여넣으세요. 스크린샷을 붙여넣어도 읽어냅니다."
+          placeholder="일본어를 넣고 Enter. 계속 넣으면 순서대로 처리합니다."
           spellCheck={false}
         />
         {image && (
@@ -121,7 +177,9 @@ export default function Analyzer({ decks, activeDeckId, savedKeys, onSave, onToa
           </div>
         )}
         <div className="composer-bar">
-          <span className="composer-hint"><kbd>⌘</kbd>+<kbd>Enter</kbd> 로 분석</span>
+          <span className="composer-hint">
+            <kbd>Enter</kbd> 분석 · <kbd>Shift</kbd>+<kbd>Enter</kbd> 줄바꿈
+          </span>
           <label className="btn" style={{ cursor: 'pointer' }}>
             이미지
             <input
@@ -135,89 +193,62 @@ export default function Analyzer({ decks, activeDeckId, savedKeys, onSave, onToa
               }}
             />
           </label>
-          <button className="btn btn-primary" onClick={run} disabled={busy || (!text.trim() && !image)}>
-            {busy ? '읽는 중' : '분석'}
+          <button className="btn btn-primary" onClick={submit} disabled={!text.trim() && !image}>
+            분석
           </button>
         </div>
       </div>
 
-      {error && <div className="error">{error}</div>}
-      {busy && <div className="loading">문장을 뜯어보는 중입니다…</div>}
-
-      {result && !busy && (
-        <>
-          <div className="sheet">
-            <p className={`source ${furigana ? '' : 'no-furigana'}`}>
-              {result.tokens.map((t, i) => {
-                const clickable = t.worth;
-                const key = `${t.lemma}|${t.pos}`;
-                return (
-                  <span
-                    key={i}
-                    className={[
-                      'tok',
-                      clickable ? '' : 'tok-plain',
-                      savedKeys.has(key) ? 'tok-saved' : '',
-                    ].join(' ')}
-                    style={{ '--tok': POS_VAR[t.pos] || 'var(--pos-other)' }}
-                    role={clickable ? 'button' : undefined}
-                    tabIndex={clickable ? 0 : undefined}
-                    onClick={clickable ? (e) => openPick(e, t, 'word') : undefined}
-                    onKeyDown={clickable ? (e) => e.key === 'Enter' && openPick(e, t, 'word') : undefined}
-                  >
-                    <Ruby surface={t.surface} reading={t.reading} />
-                  </span>
-                );
-              })}
-            </p>
-
-            <p className="translation">{result.translation}</p>
-            {result.literal && <p className="subline">직역 · {result.literal}</p>}
-
-            <div className="tags">
-              {result.jlpt !== 'unknown' && <span className="tag">{result.jlpt}</span>}
-              {result.register && <span className="tag">{result.register}</span>}
-              <button className="btn-quiet" onClick={() => setFurigana((v) => !v)}>
-                {furigana ? '후리가나 끄기' : '후리가나 켜기'}
-              </button>
-              {canSpeak() && (
-                <button className="btn-quiet" onClick={() => speak(result.original)}>소리로 듣기</button>
-              )}
-              <button
-                className="btn-quiet"
-                onClick={() => {
-                  navigator.clipboard.writeText(`${result.original}\n${result.translation}`);
-                  onToast('원문과 번역을 복사했습니다.');
-                }}
-              >
-                복사
-              </button>
-            </div>
+      {pending.length > 0 && (
+        <div className="queue">
+          <div className="queue-head">
+            <span>
+              {pending.length}건 처리 중
+              {pending.length > 1 && ` · 대기 ${pending.length - 1}`}
+            </span>
+            <button className="btn-quiet" onClick={cancelAll}>전부 취소</button>
           </div>
+          {pending.map((j) => (
+            <div className="qitem" key={j.id}>
+              <span className={`qdot ${j.status === 'running' ? 'qdot-live' : ''}`} />
+              <span className="qlabel">{j.label}</span>
+              <span className="qstatus">{j.status === 'running' ? '읽는 중' : '대기'}</span>
+              <button className="btn-quiet" onClick={() => cancel(j.id)} aria-label="취소">×</button>
+            </div>
+          ))}
+        </div>
+      )}
 
-          {result.grammar.length > 0 && (
-            <>
-              <h2 className="grammar-head">문법</h2>
-              {result.grammar.map((g, i) => (
-                <div className="gcard" key={i}>
-                  <div className="gcard-top">
-                    <span className="gpattern">{g.pattern}</span>
-                    <span className="gmeaning">{g.meaning}</span>
-                    <span style={{ flex: 1 }} />
-                    <button className="btn-quiet" onClick={(e) => openPick(e, g, 'grammar')}>
-                      담기
-                    </button>
-                  </div>
-                  <p>{g.explanation}</p>
-                  <div className="gexample">
-                    {g.example}
-                    <small>{g.exampleTranslation}</small>
-                  </div>
-                </div>
-              ))}
-            </>
-          )}
-        </>
+      {finished.map((j) =>
+        j.status === 'error' ? (
+          <div className="error" key={j.id}>
+            <strong>{j.label}</strong> — {j.error}
+            <button className="btn-quiet" style={{ float: 'right' }} onClick={() => cancel(j.id)}>닫기</button>
+          </div>
+        ) : (
+          <ResultCard
+            key={j.id}
+            result={j.result}
+            furigana={furigana}
+            savedKeys={savedKeys}
+            onToggleFurigana={() => setFurigana((v) => !v)}
+            onPick={(e, item, type) =>
+              setPick({ item, type, source: j.result, rect: e.currentTarget.getBoundingClientRect() })
+            }
+            onCopy={() => {
+              navigator.clipboard.writeText(`${j.result.original}\n${j.result.translation}`);
+              onToast('원문과 번역을 복사했습니다.');
+            }}
+            onDismiss={() => cancel(j.id)}
+          />
+        ),
+      )}
+
+      {jobs.length === 0 && (
+        <div className="empty" style={{ marginTop: 28 }}>
+          <strong>아직 읽은 문장이 없습니다.</strong>
+          위에 일본어를 넣고 Enter를 누르세요. 여러 개를 연달아 넣어도 됩니다.
+        </div>
       )}
 
       {pick && (
@@ -228,6 +259,76 @@ export default function Analyzer({ decks, activeDeckId, savedKeys, onSave, onToa
           saved={savedKeys.has(`${pick.item.lemma ?? pick.item.pattern}|${pick.item.pos ?? 'expression'}`)}
           onSave={save}
         />
+      )}
+    </>
+  );
+}
+
+function ResultCard({ result, furigana, savedKeys, onToggleFurigana, onPick, onCopy, onDismiss }) {
+  return (
+    <>
+      <div className="sheet">
+        <p className={`source ${furigana ? '' : 'no-furigana'}`}>
+          {result.tokens.map((t, i) => {
+            const clickable = t.worth;
+            const key = `${t.lemma}|${t.pos}`;
+            return (
+              <span
+                key={i}
+                className={[
+                  'tok',
+                  clickable ? '' : 'tok-plain',
+                  savedKeys.has(key) ? 'tok-saved' : '',
+                ].join(' ')}
+                style={{ '--tok': POS_VAR[t.pos] || 'var(--pos-other)' }}
+                role={clickable ? 'button' : undefined}
+                tabIndex={clickable ? 0 : undefined}
+                onClick={clickable ? (e) => onPick(e, t, 'word') : undefined}
+                onKeyDown={clickable ? (e) => e.key === 'Enter' && onPick(e, t, 'word') : undefined}
+              >
+                <Ruby surface={t.surface} reading={t.reading} />
+              </span>
+            );
+          })}
+        </p>
+
+        <p className="translation">{result.translation}</p>
+        {result.literal && <p className="subline">직역 · {result.literal}</p>}
+
+        <div className="tags">
+          {result.jlpt !== 'unknown' && <span className="tag">{result.jlpt}</span>}
+          {result.register && <span className="tag">{result.register}</span>}
+          <button className="btn-quiet" onClick={onToggleFurigana}>
+            {furigana ? '후리가나 끄기' : '후리가나 켜기'}
+          </button>
+          {canSpeak() && (
+            <button className="btn-quiet" onClick={() => speak(result.original)}>소리로 듣기</button>
+          )}
+          <button className="btn-quiet" onClick={onCopy}>복사</button>
+          <span style={{ flex: 1 }} />
+          <button className="btn-quiet" onClick={onDismiss} aria-label="이 결과 치우기">×</button>
+        </div>
+      </div>
+
+      {result.grammar.length > 0 && (
+        <>
+          <h2 className="grammar-head">문법</h2>
+          {result.grammar.map((g, i) => (
+            <div className="gcard" key={i}>
+              <div className="gcard-top">
+                <span className="gpattern">{g.pattern}</span>
+                <span className="gmeaning">{g.meaning}</span>
+                <span style={{ flex: 1 }} />
+                <button className="btn-quiet" onClick={(e) => onPick(e, g, 'grammar')}>담기</button>
+              </div>
+              <p>{g.explanation}</p>
+              <div className="gexample">
+                {g.example}
+                <small>{g.exampleTranslation}</small>
+              </div>
+            </div>
+          ))}
+        </>
       )}
     </>
   );
