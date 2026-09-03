@@ -1,12 +1,34 @@
 export async function analyze({ text, image, signal }) {
-  const res = await fetch('/api/analyze', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ text, image }),
-    signal,
-  });
-  const data = await res.json().catch(() => ({ error: '응답을 읽지 못했습니다.' }));
-  if (!res.ok) throw new Error(data.error || '분석에 실패했습니다.');
+  let res;
+  try {
+    res = await fetch('/api/analyze', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text, image }),
+      signal,
+    });
+  } catch (e) {
+    if (e.name === 'AbortError') throw e;
+    throw new Error('서버에 닿지 못했습니다. 네트워크를 확인하세요.');
+  }
+
+  // 실패 원인을 뭉개지 않으려고 본문을 글자로 먼저 받습니다.
+  // Netlify가 함수를 강제 종료하거나 함수 로딩에 실패하면 우리 형식이 아닌 응답이 옵니다.
+  const raw = await res.text();
+  let data = null;
+  try { data = JSON.parse(raw); } catch { /* JSON이 아님 */ }
+
+  if (!res.ok) {
+    const detail =
+      data?.error ||                 // 우리 함수가 보낸 메시지
+      data?.errorMessage ||          // Netlify 런타임이 보낸 메시지
+      data?.message ||
+      raw.replace(/<[^>]*>/g, ' ').trim().slice(0, 160) ||
+      '본문 없음';
+    throw new Error(`[${res.status}] ${detail}`);
+  }
+
+  if (!data) throw new Error('응답을 해석하지 못했습니다.');
   return data;
 }
 
