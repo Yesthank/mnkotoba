@@ -34,7 +34,14 @@ const schema = {
           lemma: { type: 'string', description: '사전형 기본형' },
           lemmaReading: { type: 'string' },
           pos: { type: 'string', enum: POS },
-          meaning: { type: 'string', description: '이 문맥에서의 한국어 뜻' },
+          meaning: {
+            type: 'string',
+            description: '사전형(lemma)의 한국어 뜻. 활용을 반영하지 않은 기본형 뜻.',
+          },
+          inContext: {
+            type: 'string',
+            description: '원문에 나온 이 활용형이 실제로 뜻하는 바. 활용이 없으면 빈 문자열.',
+          },
           note: { type: 'string', description: '활용/변형 설명. 없으면 빈 문자열' },
           jlpt: { type: 'string', enum: ['N5', 'N4', 'N3', 'N2', 'N1', 'unknown'] },
           worth: {
@@ -73,7 +80,11 @@ const SYSTEM = `너는 한국어 화자를 가르치는 일본어 교사다. 주
 - 복합어와 관용구는 쪼개지 말고 하나의 token으로 둔다. 예를 들어 「食べ物」「気にする」는 각각 하나다.
 - 동사와 형용사의 lemma는 반드시 사전형으로 되돌린다. 「食べました」의 lemma는 「食べる」다.
 - note에는 어떤 활용을 거쳤는지 적는다. 예: "食べる의 정중 과거형".
-- meaning은 사전 뜻 나열이 아니라 이 문맥에서의 뜻 하나를 쓴다.
+- meaning은 반드시 lemma의 뜻이다. 활용을 반영하지 않는다.
+  「届かなかった」의 meaning은 "닿다, 도달하다"이지 "닿지 않았다"가 아니다.
+  뜻이 여러 개인 낱말은 이 문맥에 맞는 뜻 하나만 고르되, 형태는 기본형으로 쓴다.
+- inContext에는 그 활용형이 문맥에서 실제로 뜻하는 바를 쓴다.
+  「届かなかった」의 inContext는 "닿지 않았다"다. 활용이 없으면 빈 문자열로 둔다.
 - worth는 조사·구두점·매우 기초적인 대명사에 false, 나머지는 true.
 - reading은 한자에 대응하는 히라가나만 쓴다. 로마자를 쓰지 않는다.
 - grammar에는 어휘가 아닌 문형만 넣는다. 예문은 원문을 재활용하지 말고 새로 만든다.
@@ -188,6 +199,7 @@ function normalize(r) {
       lemmaReading: t.lemmaReading || t.reading || '',
       pos: POS.includes(t.pos) ? t.pos : 'other',
       meaning: t.meaning || '',
+      inContext: t.inContext || '',
       note: t.note || '',
       jlpt: t.jlpt || 'unknown',
       worth: t.worth !== false,
