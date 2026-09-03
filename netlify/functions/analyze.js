@@ -113,56 +113,63 @@ export default async (req) => {
     systemInstruction: { parts: [{ text: SYSTEM }] },
     contents: [{ role: 'user', parts }],
     generationConfig: {
-      temperature: 0.2,
+      // 3.x 세대는 temperature를 무시합니다. 대신 생각하는 깊이를 낮춰 응답을 앞당깁니다.
+      // 형태소를 쪼개는 일에 오래 숙고할 필요가 없고, Netlify 무료 플랜의 10초 제한이 빠듯합니다.
+      thinkingConfig: { thinkingLevel: 'low' },
       responseMimeType: 'application/json',
       responseSchema: schema,
     },
   };
 
-  // 무료 티어는 분당 요청 수가 빡빡해서 429가 자주 납니다. 지수 백오프로 세 번 시도.
-  let lastError = '알 수 없는 오류';
-  for (let attempt = 0; attempt < 3; attempt++) {
-    try {
-      const res = await fetch(ENDPOINT(MODEL), {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-goog-api-key': process.env.GEMINI_API_KEY,
-        },
-        body: JSON.stringify(payload),
-      });
+  // 함수가 10초에 강제 종료되면 우리 형식이 아닌 응답이 나가서 원인을 알 수 없게 됩니다.
+  // 그 전에 우리가 먼저 끊고 말이 되는 메시지를 돌려줍니다. 재시도할 시간은 없습니다.
+  try {
+    const res = await fetch(ENDPOINT(MODEL), {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-goog-api-key': process.env.GEMINI_API_KEY,
+      },
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(8500),
+    });
 
-      if (res.status === 429 || res.status >= 500) {
-        lastError =
-          res.status === 429
-            ? '무료 티어 요청 한도에 걸렸습니다. 잠시 후 다시 시도하세요.'
-            : 'Gemini 서버가 응답하지 않습니다.';
-        await sleep(1000 * 2 ** attempt);
-        continue;
-      }
-
-      const data = await res.json();
-      if (!res.ok) {
-        return json({ error: data?.error?.message || 'Gemini 호출에 실패했습니다.' }, res.status);
-      }
-
-      const raw = data?.candidates?.[0]?.content?.parts?.[0]?.text;
-      if (!raw) {
-        const reason = data?.candidates?.[0]?.finishReason;
-        return json(
-          { error: reason === 'SAFETY' ? '안전 필터에 걸린 입력입니다.' : '빈 응답을 받았습니다.' },
-          502,
-        );
-      }
-
-      return json(normalize(JSON.parse(raw)));
-    } catch (e) {
-      lastError = e.message;
-      await sleep(1000 * 2 ** attempt);
+    if (res.status === 429) {
+      return json({ error: '무료 티어 분당 한도에 걸렸습니다. 20초쯤 뒤에 다시 시도하세요.' }, 429);
     }
-  }
 
-  return json({ error: lastError }, 503);
+    const raw = await res.text();
+    let data = null;
+    try { data = JSON.parse(raw); } catch { /* JSON이 아님 */ }
+
+    if (!res.ok) {
+      return json(
+        { error: data?.error?.message || `Gemini가 ${res.status}로 응답했습니다. ${raw.slice(0, 120)}` },
+        502,
+      );
+    }
+
+    const out = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+    if (!out) {
+      const reason = data?.candidates?.[0]?.finishReason;
+      const msg = reason === 'SAFETY'
+        ? '안전 필터에 걸린 입력입니다.'
+        : reason === 'MAX_TOKENS'
+          ? '문장이 너무 길어 결과가 잘렸습니다. 짧게 나눠서 넣어주세요.'
+          : `빈 응답을 받았습니다. (${reason || '이유 불명'})`;
+      return json({ error: msg }, 502);
+    }
+
+    return json(normalize(JSON.parse(out)));
+  } catch (e) {
+    if (e.name === 'TimeoutError' || e.name === 'AbortError') {
+      return json(
+        { error: '분석이 8.5초를 넘겨 중단했습니다. 문장을 짧게 나눠서 넣어보세요.' },
+        504,
+      );
+    }
+    return json({ error: `함수 내부 오류: ${e.message}` }, 500);
+  }
 };
 
 // 스키마가 있어도 선택 필드는 빠질 수 있으니 클라이언트가 믿고 쓸 모양으로 맞춰줍니다.
@@ -197,7 +204,6 @@ function normalize(r) {
   };
 }
 
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const json = (obj, status = 200) =>
   new Response(JSON.stringify(obj), {
     status,
