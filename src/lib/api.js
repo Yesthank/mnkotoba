@@ -1,8 +1,9 @@
-export async function analyze({ text, image }) {
+export async function analyze({ text, image, signal }) {
   const res = await fetch('/api/analyze', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ text, image }),
+    signal,
   });
   const data = await res.json().catch(() => ({ error: '응답을 읽지 못했습니다.' }));
   if (!res.ok) throw new Error(data.error || '분석에 실패했습니다.');
