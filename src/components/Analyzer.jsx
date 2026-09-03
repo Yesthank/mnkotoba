@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { analyze, fileToInline } from '../lib/api';
 import { speak, canSpeak } from '../lib/speech';
+import { cleanJapanese } from '../lib/normalize';
 
 const POS_VAR = {
   noun: 'var(--pos-noun)',
@@ -88,13 +89,31 @@ export default function Analyzer({ decks, activeDeckId, savedKeys, onSave, onToa
     })();
   }, [jobs, tick]);
 
+  // PDF에서 복사한 글은 한자마다 줄이 끊겨 옵니다. 붙는 순간 이어붙여 줍니다.
+  function onPasteText(e) {
+    const raw = e.clipboardData?.getData('text/plain');
+    if (!raw) return;
+    const fixed = cleanJapanese(raw);
+    if (fixed === raw) return; // 손댈 게 없으면 브라우저에 맡깁니다
+
+    e.preventDefault();
+    const el = e.currentTarget;
+    const { selectionStart: from, selectionEnd: to, value } = el;
+    setText(value.slice(0, from) + fixed + value.slice(to));
+    requestAnimationFrame(() => {
+      el.selectionStart = el.selectionEnd = from + fixed.length;
+    });
+    onToast('줄바꿈을 정리해서 붙였습니다.');
+  }
+
   function submit() {
     if (!text.trim() && !image) return;
+    const cleaned = cleanJapanese(text); // 직접 입력하거나 수정한 경우의 안전망
     const job = {
       id: uid(),
-      text: text.trim(),
+      text: cleaned,
       image: image?.inline,
-      label: text.trim() || image?.name || '이미지',
+      label: cleaned || image?.name || '이미지',
       status: 'queued',
     };
     setJobs((js) => [job, ...js].slice(0, HISTORY_LIMIT));
@@ -174,6 +193,7 @@ export default function Analyzer({ decks, activeDeckId, savedKeys, onSave, onToa
           value={text}
           onChange={(e) => setText(e.target.value)}
           onKeyDown={onKeyDown}
+          onPaste={onPasteText}
           placeholder="일본어를 넣고 Enter. 계속 넣으면 순서대로 처리합니다."
           spellCheck={false}
         />

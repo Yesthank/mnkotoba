@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { watchAuth, signIn, signOut } from './lib/firebase';
 import {
   watchDecks, watchCards, createDeck, renameDeck, deleteDeck, reorderDecks,
@@ -36,10 +36,14 @@ export default function App() {
   }, [user]);
 
   // 첫 로그인이면 기본 단어장 하나를 만들어 줍니다. 빈 화면부터 시작하지 않도록.
+  // ref로 잠그지 않으면 목록 갱신이 오기 전에 두 번 실행돼 "기본"이 두 개 생깁니다.
+  const seededRef = useRef(false);
   useEffect(() => {
-    if (user && decks.length === 0) {
-      createDeck(user.uid, '기본', 0).catch(() => {});
-    }
+    if (!user) return;
+    if (decks.length > 0) { seededRef.current = true; return; }
+    if (seededRef.current) return;
+    seededRef.current = true;
+    createDeck(user.uid, '기본', 0).catch(() => { seededRef.current = false; });
   }, [user, decks.length]);
 
   useEffect(() => {
