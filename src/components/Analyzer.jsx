@@ -26,6 +26,14 @@ const POS_KO = {
 const HISTORY_LIMIT = 20;
 const GAP_MS = 600; // 무료 티어 분당 한도에 걸리지 않게 요청 사이에 두는 간격
 const uid = () => Math.random().toString(36).slice(2, 10);
+
+// 카드 뜻에는 사전형 뜻만 넣고, 원문에서 어떤 꼴로 나왔는지는 메모로 남깁니다.
+// 앞면이 届く인데 뒷면이 "닿지 않았다"가 되면 카드가 거짓말을 하게 됩니다.
+function noteOf(t) {
+  if (t.surface === t.lemma) return t.note || '';
+  const shape = t.inContext ? `${t.surface} — ${t.inContext}` : t.surface;
+  return t.note ? `${shape} (${t.note})` : `원문에선 ${shape}`;
+}
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 export default function Analyzer({ decks, activeDeckId, savedKeys, onSave, onToast }) {
@@ -151,7 +159,7 @@ export default function Analyzer({ decks, activeDeckId, savedKeys, onSave, onToa
       : {
           type: 'word', deckId,
           surface: item.lemma, reading: item.lemmaReading || item.reading,
-          lemma: item.lemma, meaning: item.meaning, note: item.note || '',
+          lemma: item.lemma, meaning: item.meaning, note: noteOf(item),
           pos: item.pos, jlpt: item.jlpt || 'unknown',
           context: source.original, contextTranslation: source.translation,
         };
@@ -364,11 +372,16 @@ function Popover({ pick, decks, activeDeckId, saved, onSave }) {
       {reading && reading !== word && <div className="pop-reading">{reading}</div>}
       <p className="pop-meaning">{item.meaning}</p>
       {type === 'word' && (
-        <p className="pop-note">
-          {POS_KO[item.pos] || item.pos}
-          {item.note ? ` · ${item.note}` : ''}
-          {item.surface !== item.lemma ? ` · 원문에선 ${item.surface}` : ''}
-        </p>
+        <>
+          <p className="pop-note">{POS_KO[item.pos] || item.pos}</p>
+          {item.surface !== item.lemma && (
+            <p className="pop-note">
+              원문에선 <b>{item.surface}</b>
+              {item.inContext ? ` — ${item.inContext}` : ''}
+              {item.note ? ` (${item.note})` : ''}
+            </p>
+          )}
+        </>
       )}
       <div className="pop-actions">
         {canSpeak() && <button className="btn btn-quiet" onClick={() => speak(word)} aria-label="발음 듣기">🔊</button>}
