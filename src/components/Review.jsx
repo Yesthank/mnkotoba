@@ -25,10 +25,13 @@ function initSession(cards) {
     lastId: null,
     answered: 0,
     again: 0,
+    extraNew: 0, // 이 세션에서 한도 위로 더 꺼낸 새 카드 수
     history: [], // 되돌리기용. { entry, key }
     startedAt: now,
   };
 }
+
+const MORE_NEW = 20;
 
 export default function Review({ cards, onUpdate, onDone }) {
   const byId = useMemo(() => new Map(cards.map((c) => [c.id, c])), [cards]);
@@ -122,6 +125,28 @@ export default function Review({ cards, onUpdate, onDone }) {
     });
   }
 
+  // Anki의 Custom Study → '오늘 새 카드 한도 늘리기'. 아직 안 본 새 카드를 한도 위로 더 꺼냅니다.
+  const moreNewAvailable = useMemo(() => {
+    const extra = s.extraNew + MORE_NEW;
+    return sessionEntries(cards, Date.now(), extra).filter((e) => e.srs.state === 'new' && !s.pool.has(e.id) && !s.history.some((h) => h.entry.id === e.id)).length;
+  }, [cards, s.extraNew, s.pool, s.history]);
+
+  function moreNew() {
+    const now = Date.now();
+    setS((prev) => {
+      const extra = prev.extraNew + MORE_NEW;
+      const pool = new Map(prev.pool);
+      let added = 0;
+      for (const e of sessionEntries(cards, now, extra)) {
+        if (e.srs.state !== 'new' || pool.has(e.id) || prev.history.some((h) => h.entry.id === e.id)) continue;
+        pool.set(e.id, e);
+        added += 1;
+      }
+      return { ...prev, pool, extraNew: extra, total: prev.total + added, current: pickNext(pool.values(), now, prev.lastId) };
+    });
+    setShown(false);
+  }
+
   const counts = sessionCounts(s.pool.values());
   const remaining = counts.new + counts.learn + counts.review;
   const progress = s.total ? Math.max(0, Math.min(1, 1 - remaining / s.total)) : 0;
@@ -148,7 +173,10 @@ export default function Review({ cards, onUpdate, onDone }) {
         {s.total
           ? `${s.answered}번 답했고, 그중 ${s.again}번은 '다시'였습니다. ${minutes}분 걸렸습니다.`
           : '내일 다시 오면 새로 밀린 카드가 기다리고 있습니다.'}
-        <div style={{ marginTop: 16, display: 'flex', gap: 8, justifyContent: 'center' }}>
+        <div style={{ marginTop: 16, display: 'flex', gap: 8, justifyContent: 'center', flexWrap: 'wrap' }}>
+          {moreNewAvailable > 0 && (
+            <button className="btn btn-primary" onClick={moreNew}>새 카드 {Math.min(MORE_NEW, moreNewAvailable)}장 더</button>
+          )}
           {s.history.length > 0 && <button className="btn" onClick={undo}>되돌리기</button>}
           <button className="btn" onClick={onDone}>단어장으로 가기</button>
         </div>

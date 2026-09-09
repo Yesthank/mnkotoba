@@ -3,3 +3,4 @@ dist/
 .env
 .env.*
 .netlify/
+__pycache__/

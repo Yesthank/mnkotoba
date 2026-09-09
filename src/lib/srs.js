@@ -288,7 +288,8 @@ export function answer(srs, cardId, grade, now = Date.now()) {
 //
 // entries: { id, srs, createdAt(ms) } 의 iterable
 
-export function sessionEntries(cards, now = Date.now()) {
+// extraNew: 이 세션에서 한도 위로 더 꺼내 볼 새 카드 수 (Anki의 '오늘 새 카드 한도 늘리기').
+export function sessionEntries(cards, now = Date.now(), extraNew = 0) {
   const cutoff = nextDayStart(now);
   const today = dayStart(now);
   const entries = [];
@@ -304,7 +305,7 @@ export function sessionEntries(cards, now = Date.now()) {
   }
 
   // Anki의 '하루 새 카드' 한도. 오늘 이미 시작한 만큼을 빼고, 담은 순서대로 채웁니다.
-  const room = Math.max(0, CONFIG.newPerDay - introducedToday);
+  const room = Math.max(0, CONFIG.newPerDay + extraNew - introducedToday);
   fresh.sort((a, b) => a.createdAt - b.createdAt);
   return entries.concat(fresh.slice(0, room));
 }

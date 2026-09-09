@@ -137,6 +137,10 @@ def split_ruby(raw):
     return strip_html(s), ""
 
 
+def safe_name(s):
+    return re.sub(r'[\\/:*?"<>|]', "_", s).strip() or "deck"
+
+
 def cell(s):
     return (s or "").replace("\t", " ").replace("\r", "").replace("\n", "<br>").strip()
 
@@ -218,6 +222,7 @@ def main():
     ap.add_argument("--map", help="필드 매핑. 예: surface=Expression,reading=Reading,meaning=Meaning")
     ap.add_argument("--list", action="store_true", help="노트 유형과 필드만 보여주고 끝냅니다")
     ap.add_argument("--no-progress", action="store_true", help="Anki 진도를 버리고 전부 새 카드로")
+    ap.add_argument("--split", action="store_true", help="Anki 하위 덱마다 파일을 따로 만듭니다 (출력이름_덱이름.txt)")
     args = ap.parse_args()
 
     if not os.path.exists(args.apkg):
@@ -252,7 +257,8 @@ def main():
         for mid, nt in notetypes.items():
             mappings[mid] = (parse_map_arg(args.map, nt["fields"]) if args.map else None) or guess_mapping(nt["fields"])
 
-        out_lines = ["#separator:tab", "#html:true", f"#deck:{deck_name}", "#columns:" + "\t".join(OUT_COLUMNS)]
+        # --split 이면 카드의 덱(did)별로 줄을 모읍니다. 아니면 전부 한 묶음.
+        groups = {}
         skipped = 0
         for nid, mid, flds, tags, did, ctype, queue, due, ivl, factor, reps, lapses, odue in rows:
             fields = flds.split(FIELD_SEP)
@@ -279,14 +285,20 @@ def main():
             }
             prog = ("", "", "", "", "") if (args.no_progress or ctype is None) else progress_of((ctype, queue, due, ivl, factor, reps, lapses, odue), crt)
             values.update(zip(OUT_COLUMNS[7:], prog))
-            out_lines.append("\t".join(cell(values[c]) for c in OUT_COLUMNS))
+            key = did if args.split else None
+            groups.setdefault(key, []).append("\t".join(cell(values[c]) for c in OUT_COLUMNS))
 
-        out = args.out or os.path.splitext(args.apkg)[0] + ".txt"
-        with open(out, "w", encoding="utf-8") as f:
-            f.write("\n".join(out_lines) + "\n")
-
-        kept = len(out_lines) - 4
-        print(f"{out} ← 카드 {kept}개 (단어장 '{deck_name}'){f', 앞면이 비어 건너뜀 {skipped}개' if skipped else ''}")
+        base_out = args.out or os.path.splitext(args.apkg)[0] + ".txt"
+        stem, ext = os.path.splitext(base_out)
+        for key, lines in groups.items():
+            name = deck_name if key is None else (args.deck or decks.get(key, "").split("::")[-1] or deck_name)
+            out = base_out if key is None else f"{stem}_{safe_name(name)}{ext or '.txt'}"
+            header = ["#separator:tab", "#html:true", f"#deck:{name}", "#columns:" + "\t".join(OUT_COLUMNS)]
+            with open(out, "w", encoding="utf-8") as f:
+                f.write("\n".join(header + lines) + "\n")
+            print(f"{out} ← 카드 {len(lines)}개 (단어장 '{name}')")
+        if skipped:
+            print(f"앞면이 비어 건너뜀 {skipped}개")
         for mid, nt in notetypes.items():
             m = mappings[mid]
             shown = ", ".join(f"{role}←{nt['fields'][i]}" for role, i in m.items() if i < len(nt["fields"]))

@@ -108,11 +108,12 @@ python3 scripts/apkg2txt.py 덱.apkg --list                 # 노트 유형·필
 python3 scripts/apkg2txt.py 덱.apkg                        # 덱.txt 생성
 python3 scripts/apkg2txt.py 덱.apkg --map surface=Expression,reading=Reading,meaning=Meaning
 python3 scripts/apkg2txt.py 덱.apkg --no-progress          # 진도를 버리고 전부 새 카드로
+python3 scripts/apkg2txt.py 덱.apkg --split                # 하위 덱마다 파일을 따로 (상권/하권처럼 나뉜 덱)
 ```
 
 필드는 이름으로 짐작합니다(Expression/Word → 표기, Reading/Kana → 읽기, Meaning/Definition → 뜻, Sentence/Example → 예문 …). `--list`로 보고 어긋나면 `--map`으로 바로잡으세요. 앞면의 `漢字[かんじ]` 표기나 `<ruby>`는 표기와 읽기로 갈라집니다. Anki 2.1.50 이후의 새 형식 apkg는 `pip install zstandard`가 필요하고, 없으면 Anki 내보내기에서 "이전 버전 지원"을 켜면 됩니다.
 
-같은 이름의 단어장이 이미 있으면 거기에 더하고, 표기와 뜻이 같은 카드는 건너뜁니다. 가져온 새 카드는 하루 20장씩만 복습에 올라옵니다(`CONFIG.newPerDay`).
+같은 이름의 단어장이 이미 있으면 거기에 더하고, 표기와 뜻이 같은 카드는 건너뜁니다. 가져온 새 카드는 하루 20장씩만 복습에 올라옵니다(`CONFIG.newPerDay`). 오늘 몫을 다 본 뒤 더 하고 싶으면 끝 화면의 **새 카드 20장 더**를 누르면 됩니다. Anki의 Custom Study → "오늘 새 카드 한도 늘리기"와 같습니다.
 
 ## 복습은 Anki 방식으로 돕니다
 
@@ -132,6 +133,8 @@ python3 scripts/apkg2txt.py 덱.apkg --no-progress          # 진도를 버리�
 3. 새 카드
 4. 다른 게 없으면 20분 안에 돌아올 학습 카드를 앞당겨서(learn ahead)
 5. 그래도 남은 학습 카드가 있으면 그 시각까지 대기
+
+그래서 버튼에 적힌 '10분'은 최소 대기 시간이지 정확한 예약이 아닙니다. Anki도 마찬가지입니다. 다른 카드가 남아 있으면 그걸 보는 동안 10분이 지나고 나서 끼어들고, 다른 카드가 없으면 20분 한도 안에서 바로 다시 보여줍니다. 마지막 카드 하나만 남았을 때 '다시'를 누르면 곧바로 또 나오는 것도 Anki와 같은 동작입니다.
 
 하루의 경계는 새벽 4시입니다. 밤 늦게 1일 간격을 받은 카드는 다음 날 4시부터 보이고, 새벽 2시에 한 복습은 '어제' 몫으로 칩니다. 복습 간격에는 Anki와 같은 퍼지가 붙어서 같은 날 담은 카드가 한꺼번에 몰려 돌아오지 않습니다. 여덟 번 넘게 틀린 카드에는 `leech` 표시가 붙습니다(Anki와 달리 정지시키진 않습니다).
 
