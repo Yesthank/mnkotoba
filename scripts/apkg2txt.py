@@ -218,7 +218,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("apkg")
     ap.add_argument("-o", "--out", help="출력 파일 (기본: 입력 이름.txt)")
-    ap.add_argument("--deck", help="단어장 이름 (기본: apkg 안의 덱 이름)")
+    ap.add_argument("--deck", help="단어장 이름 (기본: apkg 안의 덱 이름). --split 과 함께 쓰면 {deck} 자리에 하위 덱 이름이 들어갑니다")
     ap.add_argument("--map", help="필드 매핑. 예: surface=Expression,reading=Reading,meaning=Meaning")
     ap.add_argument("--list", action="store_true", help="노트 유형과 필드만 보여주고 끝냅니다")
     ap.add_argument("--no-progress", action="store_true", help="Anki 진도를 버리고 전부 새 카드로")
@@ -251,7 +251,7 @@ def main():
         for r in rows:
             deck_counts[r[4]] = deck_counts.get(r[4], 0) + 1
         main_did = max(deck_counts, key=deck_counts.get) if deck_counts else None
-        deck_name = args.deck or (decks.get(main_did, "").split("::")[-1] if main_did else "") or os.path.splitext(os.path.basename(args.apkg))[0]
+        deck_name = (args.deck or "").replace("{deck}", "").strip() or (decks.get(main_did, "").split("::")[-1] if main_did else "") or os.path.splitext(os.path.basename(args.apkg))[0]
 
         mappings = {}
         for mid, nt in notetypes.items():
@@ -291,7 +291,13 @@ def main():
         base_out = args.out or os.path.splitext(args.apkg)[0] + ".txt"
         stem, ext = os.path.splitext(base_out)
         for key, lines in groups.items():
-            name = deck_name if key is None else (args.deck or decks.get(key, "").split("::")[-1] or deck_name)
+            sub = decks.get(key, "").split("::")[-1] if key is not None else ""
+            if key is None:
+                name = deck_name
+            elif args.deck and "{deck}" in args.deck:
+                name = args.deck.replace("{deck}", sub)
+            else:
+                name = sub or deck_name
             out = base_out if key is None else f"{stem}_{safe_name(name)}{ext or '.txt'}"
             header = ["#separator:tab", "#html:true", f"#deck:{name}", "#columns:" + "\t".join(OUT_COLUMNS)]
             with open(out, "w", encoding="utf-8") as f:
