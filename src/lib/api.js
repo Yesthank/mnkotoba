@@ -29,6 +29,8 @@ export async function analyze({ text, image, signal }) {
   }
 
   if (!data) throw new Error('응답을 해석하지 못했습니다.');
+  // 함수가 스트리밍으로 답하면 상태 코드는 늘 200이고, 실패는 본문의 error로 옵니다.
+  if (data.error) throw new Error(data.status ? `[${data.status}] ${data.error}` : data.error);
   return data;
 }
 

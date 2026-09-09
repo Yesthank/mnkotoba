@@ -54,6 +54,8 @@ GitHub에 올린 뒤 Netlify에서 저장소를 연결하면 `netlify.toml`에 �
 
 배포 후 Firebase 콘솔 → Authentication → Settings → **승인된 도메인**에 Netlify 주소를 추가해야 구글 로그인이 열립니다. 이걸 빠뜨리면 로그인 팝업이 바로 닫힙니다.
 
+분석 함수는 응답을 스트리밍으로 내보냅니다. Netlify의 일반 동기 함수는 10초에 강제 종료되지만 스트리밍 함수는 60초까지 허용되기 때문입니다. Gemini를 기다리는 시간은 `netlify/functions/analyze.js`의 `GEMINI_TIMEOUT_MS`(기본 17초)에서 바꿀 수 있고, 60초 안이면 플랜이나 설정을 건드리지 않아도 됩니다.
+
 ---
 
 ## 담긴 기능
