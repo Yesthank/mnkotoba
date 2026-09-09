@@ -187,6 +187,7 @@ export default function App() {
 
           {tab === 'review' && (
             <Review
+              key={activeDeckId} // 단어장을 바꾸면 세션을 새로 만듭니다. 안 그러면 끝난 세션 화면이 그대로 남습니다.
               cards={visibleCards}
               onUpdate={wrap((id, patch) => updateCard(user.uid, id, patch))}
               onDone={() => setTab('list')}
