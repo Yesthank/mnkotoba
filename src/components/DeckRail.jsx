@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { dueCount } from '../lib/srs';
 
 export default function DeckRail({
-  decks, cards, activeDeckId, onSelect, onCreate, onRename, onDelete, onReorder, onExportAll,
+  decks, cards, activeDeckId, onSelect, onCreate, onRename, onDelete, onReorder, onExportAll, onImport,
 }) {
   const [editing, setEditing] = useState(null);
   const [draft, setDraft] = useState('');
@@ -90,6 +90,22 @@ export default function DeckRail({
         <button className="btn" style={{ width: '100%' }} onClick={onExportAll}>
           전체 백업 내려받기
         </button>
+        <label className="btn" style={{ width: '100%', marginTop: 6, display: 'block', textAlign: 'center' }}>
+          파일에서 가져오기
+          <input
+            type="file"
+            accept=".txt,.tsv,.csv,.json,text/plain,application/json"
+            style={{ display: 'none' }}
+            onChange={(e) => {
+              const f = e.target.files?.[0];
+              e.target.value = '';
+              if (f) onImport(f);
+            }}
+          />
+        </label>
+        <p style={{ fontSize: 11.5, color: 'var(--sumi-3)', marginTop: 6, lineHeight: 1.5 }}>
+          Anki txt(apkg는 scripts/apkg2txt.py로 변환)나 이 앱의 JSON 백업을 받습니다.
+        </p>
         {activeDeckId !== '__all__' && (
           <button
             className="btn btn-danger"

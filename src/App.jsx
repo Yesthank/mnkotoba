@@ -2,8 +2,9 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { watchAuth, signIn, signOut } from './lib/firebase';
 import {
   watchDecks, watchCards, createDeck, renameDeck, deleteDeck, reorderDecks,
-  addCard, updateCard, deleteCards, moveCards,
+  addCard, updateCard, deleteCards, moveCards, importCards, restoreBackup,
 } from './lib/store';
+import { parseImport } from './lib/import';
 import { toJsonBackup, download } from './lib/export';
 import { dueCount } from './lib/srs';
 import Analyzer from './components/Analyzer';
@@ -109,6 +110,42 @@ export default function App() {
     setToast('단어장을 지웠습니다.');
   });
 
+  // 파일 가져오기. 카드 파일은 단어장 하나로, JSON 백업은 통째로 복원합니다.
+  const handleImport = wrap(async (file) => {
+    const parsed = parseImport(await file.text(), file.name);
+    if (parsed.warnings.length) console.warn('[import]', parsed.warnings.join(' '));
+
+    if (parsed.kind === 'backup') {
+      if (!confirm(`백업에 든 단어장 ${parsed.decks.length}개, 카드 ${parsed.cards.length}개를 복원합니다.\n이름이 같은 단어장은 합쳐지고, 카드는 새로 추가됩니다.`)) return;
+      setToast('복원 중…');
+      await restoreBackup(user.uid, decks, parsed.decks, parsed.cards, (n, t) => setToast(`복원 중… ${n} / ${t}`));
+      setToast(`카드 ${parsed.cards.length}개를 복원했습니다.`);
+      return;
+    }
+
+    if (!parsed.cards.length) return setToast('읽을 수 있는 카드가 없습니다.');
+    const name = prompt(`카드 ${parsed.cards.length}개를 넣을 단어장 이름\n(같은 이름이 있으면 그 단어장에 더합니다)`, parsed.deckName);
+    if (name === null) return;
+    const trimmed = name.trim() || parsed.deckName;
+
+    // 같은 이름의 단어장이 있으면 거기에 더하되, 표기+뜻이 같은 카드는 건너뜁니다.
+    let target = decks.find((d) => d.name === trimmed);
+    let list = parsed.cards;
+    if (target) {
+      const have = new Set(cards.filter((c) => c.deckId === target.id).map((c) => `${c.surface}|${c.meaning}`));
+      list = list.filter((c) => !have.has(`${c.surface}|${c.meaning}`));
+    } else {
+      target = { id: await createDeck(user.uid, trimmed, decks.length) };
+    }
+    const skipped = parsed.cards.length - list.length;
+    if (!list.length) return setToast('전부 이미 있는 카드라 넣을 게 없습니다.');
+
+    await importCards(user.uid, target.id, list, (n, t) => setToast(`가져오는 중… ${n} / ${t}`));
+    setActiveDeckId(target.id);
+    setTab('list');
+    setToast(`"${trimmed}"에 카드 ${list.length}개를 넣었습니다.${skipped ? ` 이미 있던 ${skipped}개는 건너뛰었습니다.` : ''}`);
+  });
+
   const exportAll = () => {
     download(`kotoba-backup-${new Date().toISOString().slice(0, 10)}.json`, toJsonBackup(decks, cards), 'application/json');
     setToast('전체 백업을 내려받았습니다.');
@@ -170,6 +207,7 @@ export default function App() {
           onDelete={handleDeleteDeck}
           onReorder={wrap((ordered) => reorderDecks(user.uid, ordered))}
           onExportAll={exportAll}
+          onImport={handleImport}
         />
       </aside>
 

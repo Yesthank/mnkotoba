@@ -91,3 +91,58 @@ export function deleteCards(uid, cardIds) {
   cardIds.forEach((id) => batch.delete(doc(db, 'users', uid, 'cards', id)));
   return batch.commit();
 }
+
+// Firestore 배치는 한 번에 500개까지라 400개씩 끊어 씁니다.
+const CHUNK = 400;
+
+function cardDoc(card) {
+  return {
+    type: 'word', surface: '', reading: '', lemma: '', meaning: '', pos: 'other', note: '',
+    jlpt: 'unknown', context: '', contextTranslation: '', starred: false,
+    srs: freshSrs(), createdAt: serverTimestamp(),
+    ...card,
+  };
+}
+
+/** 파일에서 읽은 카드를 한 단어장에 넣습니다. 담은 순서가 유지되도록 createdAt 을 1ms씩 띄웁니다. */
+export async function importCards(uid, deckId, cards, onProgress) {
+  const base = Date.now() - cards.length;
+  for (let i = 0; i < cards.length; i += CHUNK) {
+    const batch = writeBatch(db);
+    cards.slice(i, i + CHUNK).forEach((c, j) => {
+      const { id: _ignored, ...rest } = c;
+      batch.set(doc(cardsRef(uid)), cardDoc({ ...rest, deckId, createdAt: new Date(base + i + j) }));
+    });
+    await batch.commit();
+    onProgress?.(Math.min(cards.length, i + CHUNK), cards.length);
+  }
+}
+
+/** JSON 백업 복원. 단어장은 이름이 같으면 재사용하고, 카드는 새 문서로 넣습니다(진도 포함). */
+export async function restoreBackup(uid, existingDecks, decks, cards, onProgress) {
+  const idMap = new Map();
+  let order = existingDecks.length;
+  for (const d of decks) {
+    const found = existingDecks.find((e) => e.name === d.name);
+    idMap.set(d.id, found ? found.id : await createDeck(uid, d.name, order++));
+  }
+  let fallback = null;
+  const grouped = new Map();
+  for (const c of cards) {
+    let deckId = idMap.get(c.deckId);
+    if (!deckId) {
+      fallback ||= existingDecks[0]?.id || (await createDeck(uid, '가져온 단어장', order++));
+      deckId = fallback;
+    }
+    if (!grouped.has(deckId)) grouped.set(deckId, []);
+    grouped.get(deckId).push(c);
+  }
+  let done = 0;
+  for (const [deckId, list] of grouped) {
+    await importCards(uid, deckId, list.map((c) => {
+      const { deckId: _d, createdAt: _c, ...rest } = c;
+      return rest;
+    }), (n) => onProgress?.(done + n, cards.length));
+    done += list.length;
+  }
+}

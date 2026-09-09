@@ -29,6 +29,7 @@ export const CONFIG = {
   minimumLapseInterval: 1,    // 일
   maximumInterval: 36500,     // 일
   learnAheadMinutes: 20,      // 다른 카드가 없으면 학습 카드를 이만큼 앞당겨 보여줍니다
+  newPerDay: 20,              // 하루에 새로 시작하는 카드 수. 가져온 큰 덱이 한꺼번에 쏟아지지 않게
   leechThreshold: 8,          // 이만큼 틀리면 leech 표시
   rolloverHour: 4,            // 하루의 경계. 새벽 4시 전은 '어제'로 칩니다
 };
@@ -57,8 +58,9 @@ export const isLearning = (srs) => srs?.state === 'learning' || srs?.state === '
 
 export const isDue = (card, now = Date.now()) => (card?.srs?.due ?? 0) <= now;
 
+/** 지금 세션에 들어갈 카드 수. 새 카드는 하루 한도만큼만 셉니다. */
 export function dueCount(cards, now = Date.now()) {
-  return cards.filter((c) => isDue(c, now)).length;
+  return sessionEntries(cards, now).length;
 }
 
 // ── 하루 경계 ──────────────────────────────────────────────
@@ -153,7 +155,7 @@ export function nextStates(srs, cardId = '', now = Date.now()) {
 
   switch (s.state) {
     case 'new':
-      return learnStates({ ...base, step: 0 }, CONFIG.learnSteps, seed, null);
+      return markFresh(learnStates({ ...base, step: 0 }, CONFIG.learnSteps, seed, null));
     case 'learning':
       return learnStates(base, CONFIG.learnSteps, seed, null);
     case 'relearning':
@@ -161,6 +163,12 @@ export function nextStates(srs, cardId = '', now = Date.now()) {
     default:
       return reviewStates(base, seed, now);
   }
+}
+
+// 새 카드의 첫 답. applyState 가 introducedAt 을 찍어 하루 새 카드 한도를 셀 수 있게 합니다.
+function markFresh(states) {
+  for (const k of GRADE_KEYS) states[k].fresh = true;
+  return states;
 }
 
 // relearnTo가 null이면 새 카드의 학습, 숫자면 틀린 복습 카드의 재학습(졸업 시 그 간격으로 복귀).
@@ -260,7 +268,9 @@ export function applyState(next, now = Date.now()) {
   } else {
     due = dayStart(now) + next.amount * DAY;
   }
-  return { ...next.srs, due, lastReview: now };
+  const srs = { ...next.srs, due, lastReview: now };
+  if (next.fresh) srs.introducedAt = now;
+  return srs;
 }
 
 /** 등급(0~3)으로 바로 답을 적용합니다. 미리보기 없이 쓸 때. */
@@ -280,12 +290,23 @@ export function answer(srs, cardId, grade, now = Date.now()) {
 
 export function sessionEntries(cards, now = Date.now()) {
   const cutoff = nextDayStart(now);
-  return cards
-    .filter((c) => {
-      const s = normalizeSrs(c.srs);
-      return s.due <= now || (isLearning(s) && s.due < cutoff);
-    })
-    .map((c) => ({ id: c.id, srs: normalizeSrs(c.srs), createdAt: millis(c.createdAt) }));
+  const today = dayStart(now);
+  const entries = [];
+  let introducedToday = 0;
+  const fresh = [];
+
+  for (const c of cards) {
+    const s = normalizeSrs(c.srs);
+    if (s.introducedAt >= today && s.introducedAt < cutoff) introducedToday += 1;
+    const entry = { id: c.id, srs: s, createdAt: millis(c.createdAt) };
+    if (s.state === 'new') { if (s.due <= now) fresh.push(entry); }
+    else if (s.due <= now || (isLearning(s) && s.due < cutoff)) entries.push(entry);
+  }
+
+  // Anki의 '하루 새 카드' 한도. 오늘 이미 시작한 만큼을 빼고, 담은 순서대로 채웁니다.
+  const room = Math.max(0, CONFIG.newPerDay - introducedToday);
+  fresh.sort((a, b) => a.createdAt - b.createdAt);
+  return entries.concat(fresh.slice(0, room));
 }
 
 export function pickNext(entries, now = Date.now(), lastId = null) {
