@@ -235,14 +235,20 @@ function parseBack(raw, html = true) {
 
 // ── 공통 ────────────────────────────────────────────────
 
+// Anki 계층 태그(JLPT::N5::Day01)는 조각마다 살펴서 레벨·품사를 건지고, 태그 자체는 그대로 둡니다.
 function applyTags(card, tags) {
   const rest = [];
   for (const t of String(tags || '').split(/[\s,]+/).filter(Boolean)) {
-    if (t === '문법' || t.toLowerCase() === 'grammar') card.type = 'grammar';
-    else if (t === '단어') continue;
-    else if (POS.has(t)) card.pos = t;
-    else if (/^N[1-5]$/i.test(t)) card.jlpt = t.toUpperCase();
-    else rest.push(t);
+    if (t === '문법' || t.toLowerCase() === 'grammar') { card.type = 'grammar'; continue; }
+    if (t === '단어') continue;
+    if (POS.has(t)) { card.pos = t; continue; }
+    if (/^N[1-5]$/i.test(t)) { card.jlpt = t.toUpperCase(); continue; }
+    for (const part of t.split('::')) {
+      if (/^N[1-5]$/i.test(part) && card.jlpt === 'unknown') card.jlpt = part.toUpperCase();
+      else if (POS.has(part) && card.pos === 'other') card.pos = part;
+      else if (part === '문법') card.type = 'grammar';
+    }
+    rest.push(t);
   }
   if (rest.length) card.tags = rest;
   if (card.type === 'grammar' && card.pos === 'other') card.pos = 'expression';

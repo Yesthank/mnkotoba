@@ -1,6 +1,13 @@
 // Gemini 프록시. API 키는 여기서만 쓰이고 브라우저로 나가지 않습니다.
 
 const MODEL = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
+
+// Gemini 응답을 기다리는 최대 시간.
+// 일반(동기) Netlify 함수는 10초에 강제 종료되지만, 본문을 ReadableStream으로 돌려주는
+// 스트리밍 함수는 60초까지 허용됩니다. 그래서 아래 handler는 응답을 스트림으로 내보내고,
+// 그 안에서 이만큼 기다립니다. 60초 한도 안이면 더 늘려도 됩니다.
+const GEMINI_TIMEOUT_MS = 17000;
+const HEARTBEAT_MS = 3000; // 기다리는 동안 공백 한 칸씩 흘려 연결이 끊기지 않게 합니다
 const ENDPOINT = (m) =>
   `https://generativelanguage.googleapis.com/v1beta/models/${m}:generateContent`;
 
@@ -125,63 +132,95 @@ export default async (req) => {
     contents: [{ role: 'user', parts }],
     generationConfig: {
       // 3.x 세대는 temperature를 무시합니다. 대신 생각하는 깊이를 낮춰 응답을 앞당깁니다.
-      // 형태소를 쪼개는 일에 오래 숙고할 필요가 없고, Netlify 무료 플랜의 10초 제한이 빠듯합니다.
+      // 형태소를 쪼개는 일에 오래 숙고할 필요가 없습니다.
       thinkingConfig: { thinkingLevel: 'low' },
       responseMimeType: 'application/json',
       responseSchema: schema,
     },
   };
 
-  // 함수가 10초에 강제 종료되면 우리 형식이 아닌 응답이 나가서 원인을 알 수 없게 됩니다.
-  // 그 전에 우리가 먼저 끊고 말이 되는 메시지를 돌려줍니다. 재시도할 시간은 없습니다.
+  // 스트리밍 응답. 헤더(200)는 바로 나가고, 본문은 Gemini 결과가 오면 채웁니다.
+  // 상태 코드를 나중에 바꿀 수 없으니 실패도 본문의 {error}로 알립니다. 클라이언트가 이를 읽습니다.
+  // 기다리는 동안 공백을 흘려도 JSON.parse는 앞쪽 공백을 무시하므로 결과는 그대로 읽힙니다.
+  const encoder = new TextEncoder();
+  const stream = new ReadableStream({
+    async start(controller) {
+      const beat = setInterval(() => {
+        try { controller.enqueue(encoder.encode(' ')); } catch { /* 이미 닫힘 */ }
+      }, HEARTBEAT_MS);
+      try {
+        const result = await callGemini(payload);
+        controller.enqueue(encoder.encode(JSON.stringify(result)));
+      } catch (e) {
+        controller.enqueue(encoder.encode(JSON.stringify({ error: `함수 내부 오류: ${e.message}` })));
+      } finally {
+        clearInterval(beat);
+        controller.close();
+      }
+    },
+  });
+
+  return new Response(stream, {
+    status: 200,
+    headers: {
+      'Content-Type': 'application/json; charset=utf-8',
+      'Cache-Control': 'no-store',
+      'X-Accel-Buffering': 'no',
+    },
+  });
+};
+
+// Gemini를 부르고, 성공이면 정리된 결과를, 실패면 { error, status }를 돌려줍니다.
+async function callGemini(payload) {
+  let res;
   try {
-    const res = await fetch(ENDPOINT(MODEL), {
+    res = await fetch(ENDPOINT(MODEL), {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'x-goog-api-key': process.env.GEMINI_API_KEY,
       },
       body: JSON.stringify(payload),
-      signal: AbortSignal.timeout(8500),
+      signal: AbortSignal.timeout(GEMINI_TIMEOUT_MS),
     });
-
-    if (res.status === 429) {
-      return json({ error: '무료 티어 분당 한도에 걸렸습니다. 20초쯤 뒤에 다시 시도하세요.' }, 429);
-    }
-
-    const raw = await res.text();
-    let data = null;
-    try { data = JSON.parse(raw); } catch { /* JSON이 아님 */ }
-
-    if (!res.ok) {
-      return json(
-        { error: data?.error?.message || `Gemini가 ${res.status}로 응답했습니다. ${raw.slice(0, 120)}` },
-        502,
-      );
-    }
-
-    const out = data?.candidates?.[0]?.content?.parts?.[0]?.text;
-    if (!out) {
-      const reason = data?.candidates?.[0]?.finishReason;
-      const msg = reason === 'SAFETY'
-        ? '안전 필터에 걸린 입력입니다.'
-        : reason === 'MAX_TOKENS'
-          ? '문장이 너무 길어 결과가 잘렸습니다. 짧게 나눠서 넣어주세요.'
-          : `빈 응답을 받았습니다. (${reason || '이유 불명'})`;
-      return json({ error: msg }, 502);
-    }
-
-    return json(normalize(JSON.parse(out)));
   } catch (e) {
     if (e.name === 'TimeoutError' || e.name === 'AbortError') {
-      return json(
-        { error: '분석이 8.5초를 넘겨 중단했습니다. 문장을 짧게 나눠서 넣어보세요.' },
-        504,
-      );
+      return {
+        error: `분석이 ${GEMINI_TIMEOUT_MS / 1000}초를 넘겨 중단했습니다. 문장을 짧게 나눠서 넣어보세요.`,
+        status: 504,
+      };
     }
-    return json({ error: `함수 내부 오류: ${e.message}` }, 500);
+    throw e;
   }
-};
+
+  if (res.status === 429) {
+    return { error: '무료 티어 분당 한도에 걸렸습니다. 20초쯤 뒤에 다시 시도하세요.', status: 429 };
+  }
+
+  const raw = await res.text();
+  let data = null;
+  try { data = JSON.parse(raw); } catch { /* JSON이 아님 */ }
+
+  if (!res.ok) {
+    return {
+      error: data?.error?.message || `Gemini가 ${res.status}로 응답했습니다. ${raw.slice(0, 120)}`,
+      status: 502,
+    };
+  }
+
+  const out = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+  if (!out) {
+    const reason = data?.candidates?.[0]?.finishReason;
+    const msg = reason === 'SAFETY'
+      ? '안전 필터에 걸린 입력입니다.'
+      : reason === 'MAX_TOKENS'
+        ? '문장이 너무 길어 결과가 잘렸습니다. 짧게 나눠서 넣어주세요.'
+        : `빈 응답을 받았습니다. (${reason || '이유 불명'})`;
+    return { error: msg, status: 502 };
+  }
+
+  return normalize(JSON.parse(out));
+}
 
 // 스키마가 있어도 선택 필드는 빠질 수 있으니 클라이언트가 믿고 쓸 모양으로 맞춰줍니다.
 function normalize(r) {

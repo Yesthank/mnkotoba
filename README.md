@@ -54,6 +54,8 @@ GitHub에 올린 뒤 Netlify에서 저장소를 연결하면 `netlify.toml`에 �
 
 배포 후 Firebase 콘솔 → Authentication → Settings → **승인된 도메인**에 Netlify 주소를 추가해야 구글 로그인이 열립니다. 이걸 빠뜨리면 로그인 팝업이 바로 닫힙니다.
 
+분석 함수는 응답을 스트리밍으로 내보냅니다. Netlify의 일반 동기 함수는 10초에 강제 종료되지만 스트리밍 함수는 60초까지 허용되기 때문입니다. Gemini를 기다리는 시간은 `netlify/functions/analyze.js`의 `GEMINI_TIMEOUT_MS`(기본 17초)에서 바꿀 수 있고, 60초 안이면 플랜이나 설정을 건드리지 않아도 됩니다.
+
 ---
 
 ## 담긴 기능
@@ -109,7 +111,10 @@ python3 scripts/apkg2txt.py 덱.apkg                        # 덱.txt 생성
 python3 scripts/apkg2txt.py 덱.apkg --map surface=Expression,reading=Reading,meaning=Meaning
 python3 scripts/apkg2txt.py 덱.apkg --no-progress          # 진도를 버리고 전부 새 카드로
 python3 scripts/apkg2txt.py 덱.apkg --split                # 하위 덱마다 파일을 따로 (상권/하권처럼 나뉜 덱)
+python3 scripts/apkg2txt.py 덱.apkg --split --deck "JLPT 한끝 {deck}"   # 나눈 파일의 단어장 이름에 접두어
 ```
+
+apkg가 수백 MB라면 거의 전부 mp3와 이미지입니다. 스크립트는 미디어를 쓰지 않으니 Anki 내보내기에서 **미디어 포함**을 끄고 다시 뽑으면 몇 MB로 줄어듭니다. 태그가 `JLPT::N5::Day01`처럼 계층이면 조각을 살펴 `N5` 같은 레벨과 품사를 카드 필드에 붙이고, 태그 자체는 그대로 남깁니다.
 
 필드는 이름으로 짐작합니다(Expression/Word → 표기, Reading/Kana → 읽기, Meaning/Definition → 뜻, Sentence/Example → 예문 …). `--list`로 보고 어긋나면 `--map`으로 바로잡으세요. 앞면의 `漢字[かんじ]` 표기나 `<ruby>`는 표기와 읽기로 갈라집니다. Anki 2.1.50 이후의 새 형식 apkg는 `pip install zstandard`가 필요하고, 없으면 Anki 내보내기에서 "이전 버전 지원"을 켜면 됩니다.
 
