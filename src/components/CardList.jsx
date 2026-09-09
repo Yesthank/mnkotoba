@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
 import { speak, canSpeak } from '../lib/speech';
 import { toAnkiTsv, toPlainText, download, safeName } from '../lib/export';
-import { isDue } from '../lib/srs';
+import { isDue, isLearning } from '../lib/srs';
 
 export default function CardList({
   cards, decks, activeDeckId, onMove, onDelete, onUpdate, onToast,
@@ -123,7 +123,12 @@ export default function CardList({
                 {c.reading && c.reading !== c.surface && (
                   <span style={{ fontSize: 13, color: 'var(--sumi-3)', marginLeft: 8 }}>{c.reading}</span>
                 )}
-                {isDue(c) && <span className="deck-due" style={{ marginLeft: 8 }}>복습</span>}
+                {isDue(c) && (
+                  <span className="deck-due" style={{ marginLeft: 8 }}>
+                    {isLearning(c.srs) ? '학습 중' : c.srs?.state === 'new' || !c.srs?.reps ? '새 카드' : '복습'}
+                  </span>
+                )}
+                {c.srs?.leech && <span className="count-leech" style={{ marginLeft: 6 }}>leech</span>}
               </div>
               <div className="card-meaning">{c.meaning}</div>
               {c.note && <div className="card-note">{c.note}</div>}
