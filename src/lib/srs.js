@@ -32,6 +32,7 @@ export const CONFIG = {
   newPerDay: 20,              // 하루에 새로 시작하는 카드 수. 가져온 큰 덱이 한꺼번에 쏟아지지 않게
   leechThreshold: 8,          // 이만큼 틀리면 leech 표시
   rolloverHour: 4,            // 하루의 경계. 새벽 4시 전은 '어제'로 칩니다
+  minEase: 1.3,               // rslib MINIMUM_EASE_FACTOR
 };
 
 export const GRADE_KEYS = ['again', 'hard', 'good', 'easy'];
@@ -104,20 +105,29 @@ const FUZZ_RANGES = [
   [20, Infinity, 0.05],
 ];
 
+// rslib/scheduler/states/fuzz.rs 의 fuzz_delta.
+// 2.5일 미만은 흔들지 않고, 그 위로는 하루에 구간별 비율을 더합니다.
+// 1.0 에서 시작하는 것이 핵심입니다. 0 에서 시작하면 퍼지 폭이 원본보다 하루씩 좁아집니다.
 function fuzzDelta(ivl) {
-  let delta = 0;
+  if (ivl < 2.5) return 0;
+  let delta = 1;
   for (const [start, end, factor] of FUZZ_RANGES) {
     delta += factor * Math.max(0, Math.min(ivl, end) - start);
   }
   return delta;
 }
 
+// rslib 의 constrained_fuzz_bounds + with_review_fuzz.
 function fuzzedInterval(seed, ivl, minimum = 1, maximum = CONFIG.maximumInterval) {
   minimum = Math.min(minimum, maximum);
   ivl = clamp(ivl, minimum, maximum);
   const delta = fuzzDelta(ivl);
-  const lower = clamp(Math.round(ivl - delta), minimum, maximum);
-  const upper = clamp(Math.round(ivl + delta), lower, maximum);
+
+  let lower = clamp(Math.round(ivl - delta), minimum, maximum);
+  let upper = clamp(Math.round(ivl + delta), minimum, maximum);
+  // 위아래가 같아지면 한 칸은 벌려 둡니다. 원본과 같은 조건입니다.
+  if (upper === lower && upper > 2 && upper < maximum) upper = lower + 1;
+
   return lower + Math.floor(seededRandom(seed) * (upper - lower + 1));
 }
 
@@ -125,19 +135,23 @@ function fuzzedInterval(seed, ivl, minimum = 1, maximum = CONFIG.maximumInterval
 
 const stepDelay = (steps, idx) => (idx < steps.length ? steps[idx] * MIN : null);
 
-// 첫 단계에서 '어려움' = 첫 두 단계의 평균. 단계가 하나뿐이면 1.5배(최대 하루).
+// 첫 단계에서 '어려움' = 첫 두 단계의 평균.
+// 단계가 하나뿐이면 1.5배로 하되 '다시 간격 + 하루'를 넘지 않습니다.
+// rslib/scheduler/states/steps.rs 의 hard_delay_secs_for_first_step 과 같습니다.
 function hardDelay(steps, idx) {
   const cur = stepDelay(steps, idx);
   if (cur == null) return null;
   if (idx > 0) return cur;
   const next = stepDelay(steps, 1);
-  return next != null ? (cur + next) / 2 : Math.min(cur * 1.5, DAY);
+  return next != null ? (cur + next) / 2 : Math.min(cur * 1.5, cur + DAY);
 }
 
+// rslib/scheduler/states/review.rs 의 leech_threshold_met.
+// 문턱에서 한 번, 그 뒤로는 문턱의 절반(올림)마다 다시 표시합니다.
 const isLeech = (lapses) => {
   const t = CONFIG.leechThreshold;
   if (!t || lapses < t) return false;
-  return (lapses - t) % Math.max(1, Math.floor(t / 2)) === 0;
+  return (lapses - t) % Math.max(1, Math.ceil(t / 2)) === 0;
 };
 
 // ── 다음 상태 계산 ────────────────────────────────────────
@@ -182,6 +196,9 @@ function learnStates(s, steps, seed, relearnTo) {
     amount: ms / 1000,
   });
 
+  // 졸업할 때 ease 는 새 카드면 초기값으로, 재학습 중이던 카드면 깎여 있던 값 그대로.
+  // rslib/scheduler/states/learning.rs 는 네 버튼 모두 initial_ease_factor 를 쓰고,
+  // relearning.rs 는 들고 있던 review 상태를 그대로 돌려줍니다.
   const graduate = (days) => ({
     srs: {
       ...s,
@@ -242,7 +259,7 @@ function reviewStates(s, seed, now) {
   const lapsed = {
     ...s,
     interval: lapseIvl,
-    ease: Math.max(1.3, ease - 0.2),
+    ease: Math.max(CONFIG.minEase, ease - 0.2),
     lapses,
     leech: s.leech || isLeech(lapses),
   };
@@ -252,7 +269,7 @@ function reviewStates(s, seed, now) {
     again: firstRelearn == null
       ? { srs: { ...lapsed, state: 'review', step: 0 }, kind: 'days', amount: lapseIvl }
       : { srs: { ...lapsed, state: 'relearning', step: 0 }, kind: 'secs', amount: firstRelearn / 1000 },
-    hard: review({ interval: hardIvl, ease: Math.max(1.3, ease - 0.15) }),
+    hard: review({ interval: hardIvl, ease: Math.max(CONFIG.minEase, ease - 0.15) }),
     good: review({ interval: goodIvl }),
     easy: review({ interval: easyIvl, ease: ease + 0.15 }),
   };
