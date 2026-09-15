@@ -53,7 +53,10 @@ export default function Handwriting({ onInsert, onClose, anchorRef }) {
     };
 
     const observer = new ResizeObserver(([entry]) => {
-      document.documentElement.style.setProperty('--hw-sheet-h', `${Math.round(entry.contentRect.height)}px`);
+      // contentRect 는 안쪽 여백을 뺀 값입니다. 그걸 쓰면 본문 아래를 비우는 양이
+      // 시트의 padding + 안전 영역만큼 모자라 맨 아랫줄이 가립니다. 테두리까지 재야 합니다.
+      const height = entry.borderBoxSize?.[0]?.blockSize ?? entry.target.getBoundingClientRect().height;
+      document.documentElement.style.setProperty('--hw-sheet-h', `${Math.round(height)}px`);
       // 콜백 안에서 굴리면 브라우저가 이어질 알림을 버립니다. 한 프레임 뒤로 미룹니다.
       requestAnimationFrame(keepAnchorVisible);
     });
@@ -124,10 +127,18 @@ function Draw({ onInsert }) {
   const sizeRef = useRef(0);
   const timerRef = useRef(0);
 
+  const candsRef = useRef(null);
+
   const [strokeCount, setStrokeCount] = useState(0);
   const [candidates, setCandidates] = useState([]);
   const [status, setStatus] = useState(isReady() ? 'ready' : 'loading');
   const [error, setError] = useState('');
+  const [notice, setNotice] = useState('');
+
+  // 후보줄을 옆으로 넘겨 둔 채 새 획을 그으면 새 1위가 화면 밖에 앉습니다.
+  useEffect(() => {
+    if (candsRef.current) candsRef.current.scrollLeft = 0;
+  }, [candidates]);
 
   const paint = useCallback(() => {
     const canvas = canvasRef.current;
@@ -230,7 +241,12 @@ function Draw({ onInsert }) {
   // 여기서 기본 동작을 막으면 크롬이 이후 손가락 탭에서 클릭을 만들지 않아
   // 후보와 지우기 버튼이 먹통이 됩니다.
   function onPointerDown(e) {
-    if (status !== 'ready' || strokesRef.current.length >= MAX_STROKES) return;
+    if (status !== 'ready') return;
+    if (strokesRef.current.length >= MAX_STROKES) return setNotice('획이 너무 많습니다. 지우고 다시 그어보세요.');
+
+    // 예약된 인식을 물립니다. 인식은 90ms 남짓 걸려서, 다음 획을 긋는 도중에 돌면
+    // 그 동안 포인터 이벤트가 밀려 획 가운데가 직선으로 튑니다.
+    clearTimeout(timerRef.current);
     e.currentTarget.setPointerCapture?.(e.pointerId);
     drawingRef.current = true;
     strokesRef.current.push([pointOf(e)]);
@@ -261,6 +277,7 @@ function Draw({ onInsert }) {
   }
 
   function undo() {
+    setNotice('');
     strokesRef.current.pop();
     setStrokeCount(strokesRef.current.length);
     paint();
@@ -268,6 +285,7 @@ function Draw({ onInsert }) {
   }
 
   function clear() {
+    setNotice('');
     strokesRef.current = [];
     setStrokeCount(0);
     setCandidates([]);
@@ -284,7 +302,7 @@ function Draw({ onInsert }) {
   return (
     <div className="hw-main">
       {/* 후보. 좁은 화면에서는 캔버스 위에서 가로로 넘깁니다. */}
-      <div className="hw-cands">
+      <div className="hw-cands" ref={candsRef}>
         {candidates.length > 0 ? (
           candidates.map((char) => (
             <button key={char} className="hw-cand" onClick={() => pick(char)}>
@@ -295,9 +313,10 @@ function Draw({ onInsert }) {
           <p className="hw-note hw-cands-empty">
             {busy
               ? (status === 'loading' ? '인식기를 불러오는 중…' : error)
-              : strokeCount === 0
-                ? '한자를 그리면 닮은 글자가 여기에 뜹니다.'
-                : '닮은 글자를 찾지 못했습니다. 조금 더 또렷하게 그어보세요.'}
+              : notice
+                || (strokeCount === 0
+                  ? '한자를 그리면 닮은 글자가 여기에 뜹니다.'
+                  : '닮은 글자를 찾지 못했습니다. 조금 더 또렷하게 그어보세요.')}
           </p>
         )}
       </div>
@@ -366,6 +385,8 @@ function Kana({ onInsert }) {
           placeholder={katakana ? 'ko-hi- → コーヒー' : 'nihongo → にほんご'}
           autoCapitalize="none"
           autoCorrect="off"
+          autoComplete="off"
+          enterKeyHint="done"
           spellCheck={false}
           aria-label="로마자 입력"
         />

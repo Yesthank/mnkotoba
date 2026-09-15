@@ -364,7 +364,8 @@ ruby rt {
 
 .pop {
   position: fixed;
-  z-index: 40;
+  /* 필기 시트(55) 보다 위. 시트가 열린 채 아래쪽 단어를 누르면 뜻이 시트에 가립니다. */
+  z-index: 58;
   width: 290px;
   background: var(--sheet);
   border: 1px solid var(--sumi-3);
@@ -715,6 +716,14 @@ select, input[type='text'] {
     align-items: center;
   }
   .hw-cands::-webkit-scrollbar { display: none; }
+
+  /* 연달아 두 번 누르면 아이폰이 화면을 확대합니다. 누르는 곳은 전부 막아 둡니다. */
+  .hw-cand,
+  .hw-tools .btn,
+  .hw-tab,
+  .hw-close {
+    touch-action: manipulation;
+  }
 
   .hw-cand {
     flex: none;
