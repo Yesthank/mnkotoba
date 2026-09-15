@@ -56,6 +56,13 @@ export default function Review({ cards, onUpdate, onDone }) {
     return () => { clearTimeout(wake); clearInterval(tick); };
   }, [s.current]);
 
+  // 카드가 아직 안 내려온 채로 탭에 들어왔다면(첫 로그인 직후), 카드가 도착했을 때 세션을 다시 만듭니다.
+  useEffect(() => {
+    if (s.total > 0 || s.answered > 0) return;
+    if (sessionEntries(cards).length === 0) return;
+    setS(initSession(cards));
+  }, [cards]);
+
   // 세션 도중 다른 곳에서 지워진 카드는 조용히 건너뜁니다.
   useEffect(() => {
     if (!entry || card) return;

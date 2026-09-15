@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { analyze, fileToInline } from '../lib/api';
 import { speak, canSpeak } from '../lib/speech';
 import { cleanJapanese } from '../lib/normalize';
+import Handwriting from './Handwriting';
 
 const POS_VAR = {
   noun: 'var(--pos-noun)',
@@ -44,9 +45,12 @@ export default function Analyzer({ decks, activeDeckId, savedKeys, onSave, onToa
   const [tick, setTick] = useState(0);
   const [furigana, setFurigana] = useState(true);
   const [pick, setPick] = useState(null);
+  const [writing, setWriting] = useState(false);
 
   const runningRef = useRef(false);
   const abortRef = useRef(null);
+  const textRef = useRef(null);
+  const caretRef = useRef(null); // [시작, 끝]
 
   const pending = jobs.filter((j) => j.status === 'queued' || j.status === 'running');
   const finished = jobs.filter((j) => j.status === 'done' || j.status === 'error');
@@ -104,6 +108,30 @@ export default function Analyzer({ decks, activeDeckId, savedKeys, onSave, onToa
       el.selectionStart = el.selectionEnd = from + fixed.length;
     });
     onToast('줄바꿈을 정리해서 붙였습니다.');
+  }
+
+  // 커서 자리를 직접 기억해 둡니다. 패널에서 글자를 고르는 동안 입력창은 포커스를 잃는데,
+  // 그 상태에서 selectionStart 를 읽으면 브라우저가 0 을 돌려주어 글자가 맨 앞에 박힙니다.
+  function rememberCaret(e) {
+    const el = e.currentTarget;
+    caretRef.current = [el.selectionStart, el.selectionEnd];
+  }
+
+  // 필기·가나 패널에서 고른 글자를 커서 자리에 넣습니다.
+  // 모바일에서 입력창에 포커스를 주면 키보드가 올라와 패널을 덮으므로 포커스는 옮기지 않습니다.
+  function insertAtCursor(chunk) {
+    const [from, to] = caretRef.current ?? [text.length, text.length];
+    const start = Math.min(Math.max(0, from), text.length);
+    const end = Math.min(Math.max(start, to), text.length);
+
+    setText(text.slice(0, start) + chunk + text.slice(end));
+
+    const caret = start + chunk.length;
+    caretRef.current = [caret, caret];
+    const el = textRef.current;
+    if (el && document.activeElement === el) {
+      requestAnimationFrame(() => { el.selectionStart = el.selectionEnd = caret; });
+    }
   }
 
   function submit() {
@@ -190,9 +218,14 @@ export default function Analyzer({ decks, activeDeckId, savedKeys, onSave, onToa
     <>
       <div className="composer">
         <textarea
+          ref={textRef}
           value={text}
           onChange={(e) => setText(e.target.value)}
           onKeyDown={onKeyDown}
+          onKeyUp={rememberCaret}
+          onSelect={rememberCaret}
+          onClick={rememberCaret}
+          onBlur={rememberCaret}
           onPaste={onPasteText}
           placeholder="일본어를 넣고 Enter. 계속 넣으면 순서대로 처리합니다."
           spellCheck={false}
@@ -208,6 +241,14 @@ export default function Analyzer({ decks, activeDeckId, savedKeys, onSave, onToa
           <span className="composer-hint">
             <kbd>Enter</kbd> 분석 · <kbd>Shift</kbd>+<kbd>Enter</kbd> 줄바꿈
           </span>
+          <button
+            className="btn"
+            aria-pressed={writing}
+            onClick={() => setWriting((v) => !v)}
+            title="일본어 자판 없이 글자 넣기"
+          >
+            필기·가나
+          </button>
           <label className="btn" style={{ cursor: 'pointer' }}>
             이미지
             <input
@@ -225,6 +266,14 @@ export default function Analyzer({ decks, activeDeckId, savedKeys, onSave, onToa
             분석
           </button>
         </div>
+
+        {writing && (
+          <Handwriting
+            onInsert={insertAtCursor}
+            onClose={() => setWriting(false)}
+            anchorRef={textRef}
+          />
+        )}
       </div>
 
       {pending.length > 0 && (
