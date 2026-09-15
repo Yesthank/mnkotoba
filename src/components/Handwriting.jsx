@@ -6,15 +6,98 @@ import { toKana, toKatakana, toHiragana } from '../lib/romaji';
 //   필기 — 한자를 그려서 고릅니다. 인식기가 한자 2213자만 알고 가나는 모릅니다.
 //   가나 — 로마자를 치면 가나가 됩니다. saikou → さいこう
 //
+// 넓은 화면에서는 입력창 아래에 펼쳐지고, 좁은 화면에서는 자판처럼 바닥에 붙습니다.
+// 붙는 쪽은 CSS 가 맡고, 여기서는 시트 높이와 자판에 가린 높이만 알려 줍니다.
+//
 // 그리기는 여기서 직접 합니다. 라이브러리의 캔버스 초기화를 쓰면 패널을 여닫을 때마다
 // 리스너가 겹쳐 획이 두 번 기록되고, 화면 배율 보정도 없습니다.
 
 const MAX_STROKES = 40;
 
-export default function Handwriting({ onInsert, onClose }) {
+/** 이 요소를 실제로 굴리는 칸. 이 앱은 window 가 아니라 .main 이 스크롤됩니다. */
+function scrollerOf(el) {
+  for (let node = el.parentElement; node; node = node.parentElement) {
+    const overflow = getComputedStyle(node).overflowY;
+    if ((overflow === 'auto' || overflow === 'scroll') && node.scrollHeight > node.clientHeight) {
+      return node;
+    }
+  }
+  return null;
+}
+
+export default function Handwriting({ onInsert, onClose, anchorRef }) {
   const [mode, setMode] = useState('draw');
+  const rootRef = useRef(null);
+
+  // 바닥에 붙었을 때 본문이 시트에 가리지 않도록 실제 높이를 알려 주고,
+  // 입력창이 시트에 덮였으면 그 위로 끌어올립니다. 폰을 눕히면 특히 자리가 없습니다.
+  useEffect(() => {
+    const root = rootRef.current;
+    if (!root) return;
+
+    document.body.classList.add('hw-open');
+
+    // 시트가 화면에 붙어 있을 때만 끌어올립니다. 넓은 화면에서는 그냥 흐르는 칸입니다.
+    const keepAnchorVisible = () => {
+      const anchor = anchorRef?.current;
+      if (!anchor || getComputedStyle(root).position !== 'fixed') return;
+
+      // 시트는 화면에 고정이라 화면 좌표로 재면 됩니다.
+      const room = window.innerHeight - root.getBoundingClientRect().height - 12;
+      const gap = anchor.getBoundingClientRect().bottom - room;
+      if (gap <= 0) return;
+
+      // 부드럽게 굴리면 아직 움직이는 중인 위치를 다시 재게 되어 몇 픽셀이 모자란 채로
+      // 끝납니다. 시트가 뜨는 순간이라 즉시 옮겨도 튀지 않습니다.
+      (scrollerOf(anchor) ?? window).scrollBy({ top: gap, behavior: 'auto' });
+    };
+
+    const observer = new ResizeObserver(([entry]) => {
+      document.documentElement.style.setProperty('--hw-sheet-h', `${Math.round(entry.contentRect.height)}px`);
+      // 콜백 안에서 굴리면 브라우저가 이어질 알림을 버립니다. 한 프레임 뒤로 미룹니다.
+      requestAnimationFrame(keepAnchorVisible);
+    });
+    observer.observe(root);
+
+    // 인식기를 받아오는 동안 시트 높이가 몇 번 더 바뀝니다. 잠시 따라가며 자리를 맞춥니다.
+    let left = 8;
+    const settle = setInterval(() => {
+      keepAnchorVisible();
+      if ((left -= 1) <= 0) clearInterval(settle);
+    }, 60);
+
+    return () => {
+      observer.disconnect();
+      clearInterval(settle);
+      document.body.classList.remove('hw-open');
+      document.documentElement.style.removeProperty('--hw-sheet-h');
+    };
+  }, [anchorRef]);
+
+  // 가나 탭에서 자판이 올라오면 바닥에 붙은 시트가 그 아래로 숨습니다.
+  // 자판이 먹은 높이만큼 시트를 띄웁니다. 이 앱의 다른 화면은 건드리지 않습니다.
+  useEffect(() => {
+    const viewport = window.visualViewport;
+    if (!viewport) return;
+
+    const update = () => {
+      const hidden = Math.max(0, window.innerHeight - viewport.height - viewport.offsetTop);
+      document.documentElement.style.setProperty('--hw-keyboard', `${Math.round(hidden)}px`);
+    };
+    update();
+    viewport.addEventListener('resize', update);
+    viewport.addEventListener('scroll', update);
+
+    return () => {
+      viewport.removeEventListener('resize', update);
+      viewport.removeEventListener('scroll', update);
+      document.documentElement.style.removeProperty('--hw-keyboard');
+    };
+  }, []);
+
   return (
-    <div className="hw">
+    <div className="hw" ref={rootRef}>
+      <div className="hw-grab" aria-hidden="true" />
       <div className="hw-head">
         <div className="hw-tabs">
           <button className="hw-tab" aria-current={mode === 'draw'} onClick={() => setMode('draw')}>
@@ -24,7 +107,7 @@ export default function Handwriting({ onInsert, onClose }) {
             가나
           </button>
         </div>
-        <button className="btn-quiet" onClick={onClose}>닫기</button>
+        <button className="btn-quiet hw-close" onClick={onClose}>닫기</button>
       </div>
 
       {mode === 'draw' ? <Draw onInsert={onInsert} /> : <Kana onInsert={onInsert} />}
@@ -94,7 +177,15 @@ function Draw({ onInsert }) {
     if (!size || size === sizeRef.current) return;
 
     const ratio = window.devicePixelRatio || 1;
+    const before = sizeRef.current;
     sizeRef.current = size;
+
+    // 화면이 돌아가 캔버스 크기가 바뀌면 이미 그린 획도 같은 비율로 옮깁니다.
+    if (before && strokesRef.current.length) {
+      const k = size / before;
+      strokesRef.current = strokesRef.current.map((s) => s.map(([x, y]) => [x * k, y * k]));
+    }
+
     canvas.width = Math.round(size * ratio);
     canvas.height = Math.round(size * ratio);
     canvas.getContext('2d').setTransform(ratio, 0, 0, ratio, 0, 0);
@@ -135,9 +226,11 @@ function Draw({ onInsert }) {
     return [e.clientX - rect.left, e.clientY - rect.top];
   }
 
+  // preventDefault 는 부르지 않습니다. 스크롤은 CSS 의 touch-action 이 이미 막고 있고,
+  // 여기서 기본 동작을 막으면 크롬이 이후 손가락 탭에서 클릭을 만들지 않아
+  // 후보와 지우기 버튼이 먹통이 됩니다.
   function onPointerDown(e) {
     if (status !== 'ready' || strokesRef.current.length >= MAX_STROKES) return;
-    e.preventDefault();
     e.currentTarget.setPointerCapture?.(e.pointerId);
     drawingRef.current = true;
     strokesRef.current.push([pointOf(e)]);
@@ -147,7 +240,6 @@ function Draw({ onInsert }) {
 
   function onPointerMove(e) {
     if (!drawingRef.current) return;
-    e.preventDefault();
     const stroke = strokesRef.current[strokesRef.current.length - 1];
     const [x, y] = pointOf(e);
     const [px, py] = stroke[stroke.length - 1];
@@ -187,66 +279,53 @@ function Draw({ onInsert }) {
     clear();
   }
 
-  return (
-    <>
-      <div className="hw-body">
-        <div className="hw-pad">
-          <canvas
-            ref={canvasRef}
-            className="hw-canvas"
-            onPointerDown={onPointerDown}
-            onPointerMove={onPointerMove}
-            onPointerUp={onPointerUp}
-            onPointerCancel={onPointerUp}
-            onPointerLeave={onPointerUp}
-            aria-label="한자를 그리는 곳"
-          />
-          {status !== 'ready' && (
-            <div className="hw-veil">
-              {status === 'loading' ? '인식기를 불러오는 중…' : error}
-            </div>
-          )}
-          {status === 'ready' && strokeCount === 0 && (
-            <div className="hw-veil hw-veil-hint">여기에 한자를 그리세요</div>
-          )}
-        </div>
+  const busy = status !== 'ready';
 
-        <div className="hw-side">
-          <div className="hw-cands">
-            {candidates.length > 0
-              ? candidates.map((char) => (
-                  <button key={char} className="hw-cand" onClick={() => pick(char)}>
-                    {char}
-                  </button>
-                ))
-              : (
-                <p className="hw-note">
-                  {strokeCount === 0
-                    ? '획을 그으면 닮은 글자가 여기에 뜹니다.'
-                    : '닮은 글자를 찾지 못했습니다. 획을 조금 더 또렷하게 그어보세요.'}
-                </p>
-              )}
-          </div>
-        </div>
+  return (
+    <div className="hw-main">
+      {/* 후보. 좁은 화면에서는 캔버스 위에서 가로로 넘깁니다. */}
+      <div className="hw-cands">
+        {candidates.length > 0 ? (
+          candidates.map((char) => (
+            <button key={char} className="hw-cand" onClick={() => pick(char)}>
+              {char}
+            </button>
+          ))
+        ) : (
+          <p className="hw-note hw-cands-empty">
+            {busy
+              ? (status === 'loading' ? '인식기를 불러오는 중…' : error)
+              : strokeCount === 0
+                ? '한자를 그리면 닮은 글자가 여기에 뜹니다.'
+                : '닮은 글자를 찾지 못했습니다. 조금 더 또렷하게 그어보세요.'}
+          </p>
+        )}
       </div>
 
-      <div className="hw-bar">
-        <span className="hw-note">
-          {strokeCount > 0 ? `${strokeCount}획` : '가나는 위쪽 가나 탭에서 넣습니다'}
-        </span>
-        <span style={{ flex: 1 }} />
+      <div className="hw-pad">
+        <canvas
+          ref={canvasRef}
+          className="hw-canvas"
+          onPointerDown={onPointerDown}
+          onPointerMove={onPointerMove}
+          onPointerUp={onPointerUp}
+          onPointerCancel={onPointerUp}
+          onPointerLeave={onPointerUp}
+          aria-label="한자를 그리는 곳"
+        />
+        {busy && <div className="hw-veil">{status === 'loading' ? '불러오는 중…' : '불러오지 못했습니다'}</div>}
+        {!busy && strokeCount === 0 && <div className="hw-veil hw-veil-hint">여기에 그리세요</div>}
+      </div>
+
+      <div className="hw-tools">
         <button className="btn" onClick={undo} disabled={strokeCount === 0}>1획 지우기</button>
         <button className="btn" onClick={clear} disabled={strokeCount === 0}>전부 지우기</button>
+        <span className="hw-note hw-count">{strokeCount > 0 ? `${strokeCount}획` : ''}</span>
+        <span className="hw-note hw-credit">
+          <a href="https://github.com/asdfjkl/kanjicanvas" target="_blank" rel="noreferrer">KanjiCanvas</a> (MIT)
+        </span>
       </div>
-
-      <p className="hw-credit">
-        한자 인식{' '}
-        <a href="https://github.com/asdfjkl/kanjicanvas" target="_blank" rel="noreferrer">
-          KanjiCanvas
-        </a>{' '}
-        (MIT)
-      </p>
-    </>
+    </div>
   );
 }
 
@@ -277,20 +356,7 @@ function Kana({ onInsert }) {
 
   return (
     <div className="hw-kana">
-      <div className="hw-bar" style={{ marginTop: 0 }}>
-        <span className="hw-note">로마자를 치면 가나가 됩니다. saikou → さいこう</span>
-        <span style={{ flex: 1 }} />
-        <div className="hw-tabs">
-          <button className="hw-tab" aria-current={!katakana} onClick={() => switchKind(false)}>
-            ひらがな
-          </button>
-          <button className="hw-tab" aria-current={katakana} onClick={() => switchKind(true)}>
-            カタカナ
-          </button>
-        </div>
-      </div>
-
-      <div className="hw-bar">
+      <div className="hw-kana-row">
         <input
           ref={inputRef}
           type="text"
@@ -301,12 +367,18 @@ function Kana({ onInsert }) {
           autoCapitalize="none"
           autoCorrect="off"
           spellCheck={false}
-          style={{ flex: 1, minWidth: 0 }}
           aria-label="로마자 입력"
         />
-        <button className="btn btn-primary" onClick={insert} disabled={!value.trim()}>
-          넣기
-        </button>
+        <button className="btn btn-primary" onClick={insert} disabled={!value.trim()}>넣기</button>
+      </div>
+
+      <div className="hw-kana-row">
+        <div className="hw-tabs">
+          <button className="hw-tab" aria-current={!katakana} onClick={() => switchKind(false)}>ひらがな</button>
+          <button className="hw-tab" aria-current={katakana} onClick={() => switchKind(true)}>カタカナ</button>
+        </div>
+        <span style={{ flex: 1 }} />
+        <span className="hw-note">로마자를 치면 가나가 됩니다</span>
       </div>
     </div>
   );

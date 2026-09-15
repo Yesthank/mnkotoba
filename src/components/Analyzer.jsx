@@ -267,7 +267,13 @@ export default function Analyzer({ decks, activeDeckId, savedKeys, onSave, onToa
           </button>
         </div>
 
-        {writing && <Handwriting onInsert={insertAtCursor} onClose={() => setWriting(false)} />}
+        {writing && (
+          <Handwriting
+            onInsert={insertAtCursor}
+            onClose={() => setWriting(false)}
+            anchorRef={textRef}
+          />
+        )}
       </div>
 
       {pending.length > 0 && (

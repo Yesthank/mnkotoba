@@ -545,13 +545,16 @@ select, input[type='text'] {
 }
 
 /* ── 필기·가나 입력 ───────────────────────────────────────
-   일본어 자판이 없는 기기에서 글자를 넣는 판. 입력창 바로 아래에 펼쳐집니다. */
+   넓은 화면에서는 입력창 아래에 펼쳐지고, 좁은 화면에서는 자판처럼 바닥에 붙습니다.
+   붙었을 때의 칸 배치는 네이버 일본어사전과 같습니다. 후보가 위, 그 아래 캔버스와 버튼. */
 
 .hw {
   margin-top: 10px;
   padding-top: 12px;
   border-top: 1px solid var(--rule);
 }
+
+.hw-grab { display: none; }
 
 .hw-head {
   display: flex;
@@ -564,17 +567,27 @@ select, input[type='text'] {
 .hw-tabs { display: flex; gap: 2px; }
 
 .hw-tab {
-  padding: 5px 11px;
+  padding: 6px 12px;
   border-radius: var(--radius);
   font-size: 13px;
   color: var(--sumi-3);
+  white-space: nowrap;
 }
 .hw-tab:hover { background: #edeae0; }
 .hw-tab[aria-current='true'] { background: var(--sumi); color: var(--sheet); }
 
-.hw-body { display: flex; gap: 12px; align-items: flex-start; }
+/* 칸 이름으로 배치합니다. 화면 폭에 따라 판만 바꾸면 됩니다. */
+.hw-main {
+  display: grid;
+  gap: 10px 12px;
+  grid-template-columns: 190px minmax(0, 1fr);
+  grid-template-areas:
+    'pad cands'
+    'tools tools';
+  align-items: start;
+}
 
-.hw-pad { position: relative; width: 190px; flex: none; }
+.hw-pad { grid-area: pad; position: relative; }
 
 .hw-canvas {
   display: block;
@@ -588,6 +601,7 @@ select, input[type='text'] {
   touch-action: none;
   -webkit-user-select: none;
   user-select: none;
+  -webkit-touch-callout: none; /* 길게 눌렀을 때 뜨는 아이폰 메뉴를 막습니다 */
 }
 
 .hw-veil {
@@ -602,11 +616,15 @@ select, input[type='text'] {
   color: var(--sumi-3);
   pointer-events: none;
 }
-.hw-veil-hint { opacity: 0.65; }
+.hw-veil-hint { opacity: 0.6; }
 
-.hw-side { flex: 1; min-width: 0; align-self: stretch; }
-
-.hw-cands { display: flex; flex-wrap: wrap; gap: 6px; align-content: flex-start; }
+.hw-cands {
+  grid-area: cands;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-content: flex-start;
+}
 
 .hw-cand {
   font-family: var(--serif-jp);
@@ -619,20 +637,126 @@ select, input[type='text'] {
   background: var(--sheet);
 }
 .hw-cand:hover { background: #f2efe6; border-color: var(--sumi-3); }
+.hw-cand:active { background: #e8e4d8; }
+
+.hw-cands-empty { align-self: center; }
+
+.hw-tools {
+  grid-area: tools;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
 
 .hw-note { font-size: 12.5px; color: var(--sumi-3); margin: 0; line-height: 1.5; }
+.hw-count { font-variant-numeric: tabular-nums; }
 
-.hw-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
-
-.hw-kana { padding-bottom: 2px; }
-
-.hw-credit { font-size: 11.5px; color: var(--sumi-3); margin: 10px 0 0; }
+.hw-credit { font-size: 11.5px; margin-left: auto; }
 .hw-credit a { color: var(--sumi-3); }
 
-@media (max-width: 560px) {
-  .hw-body { flex-direction: column; }
-  .hw-pad { width: 100%; max-width: 260px; align-self: center; }
-  .hw-side { width: 100%; }
+.hw-kana { display: flex; flex-direction: column; gap: 8px; }
+.hw-kana-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.hw-kana-row input { flex: 1; min-width: 0; }
+
+/* ── 좁은 화면: 자판처럼 바닥에 붙습니다 ─────────────────── */
+
+/* 폭이 좁거나 높이가 낮으면(폰 가로) 시트로 바뀝니다. */
+@media (max-width: 620px), (max-height: 560px) {
+  .hw {
+    position: fixed;
+    left: 0;
+    right: 0;
+    /* 자판이 올라오면 그만큼 띄워 시트가 가리지 않게 합니다. */
+    bottom: var(--hw-keyboard, 0px);
+    z-index: 55;
+    margin: 0;
+    padding: 6px 12px calc(10px + env(safe-area-inset-bottom));
+    background: var(--paper);
+    border-top: 1px solid var(--rule);
+    box-shadow: 0 -8px 24px rgba(35, 33, 28, 0.14);
+  }
+
+  /* 붙잡는 손잡이. 시트라는 걸 알려 주는 표시입니다. */
+  .hw-grab {
+    display: block;
+    width: 38px;
+    height: 4px;
+    margin: 2px auto 6px;
+    border-radius: 999px;
+    background: var(--rule);
+  }
+
+  .hw-head { margin-bottom: 8px; }
+
+  /* 손가락으로 누르는 곳은 44px 아래로 내려가지 않게 합니다. */
+  .hw-tab,
+  .hw-close {
+    min-height: 44px;
+    padding: 0 14px;
+    font-size: 13.5px;
+  }
+
+  .hw-main {
+    gap: 8px 10px;
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-areas:
+      'cands cands'
+      'pad tools';
+  }
+
+  /* 후보는 한 줄로 두고 가로로 넘깁니다. 줄바꿈되면 시트가 들쭉날쭉해집니다. */
+  .hw-cands {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
+    scrollbar-width: none;
+    min-height: 50px;
+    align-items: center;
+  }
+  .hw-cands::-webkit-scrollbar { display: none; }
+
+  .hw-cand {
+    flex: none;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 26px;
+    padding: 4px 12px;
+    min-width: 50px;
+    min-height: 44px;
+  }
+
+  /* 캔버스는 남은 폭을 채우되 화면 높이를 넘지 않게 묶어 둡니다. */
+  .hw-pad { width: min(100%, 34vh); justify-self: center; }
+
+  .hw-tools {
+    flex-direction: column;
+    align-items: stretch;
+    align-self: center;
+    gap: 6px;
+    width: 104px;
+  }
+  .hw-tools .btn { min-height: 44px; padding: 0 6px; font-size: 13px; }
+  .hw-count { text-align: center; }
+  .hw-credit { margin-left: 0; text-align: center; }
+
+  .hw-kana-row input { font-size: 16px; } /* 16px 미만이면 iOS 가 화면을 확대합니다 */
+
+  /* 폰을 눕히면 높이가 없습니다. 입력창이 시트 위에 남을 만큼 시트를 줄입니다. */
+  @media (max-height: 560px) {
+    .hw { padding-top: 4px; }
+    .hw-grab { display: none; }
+    .hw-head { margin-bottom: 6px; }
+    .hw-cands { min-height: 40px; }
+    .hw-cand { font-size: 22px; padding: 4px 10px; min-width: 44px; }
+    .hw-pad { width: min(100%, 40vh); }
+    .hw-credit { display: none; }
+  }
+
+  /* 시트가 본문을 가리지 않도록 그 높이만큼 아래를 비워 둡니다. */
+  body.hw-open .main { padding-bottom: calc(var(--hw-sheet-h, 0px) + 16px); }
+  body.hw-open .tabbar { display: none; }
 }
 
 /* ── 알림 ────────────────────────────────────────────────── */
