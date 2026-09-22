@@ -8,6 +8,12 @@ const MODEL = process.env.GEMINI_MODEL || 'gemini-2.5-flash';
 // 그 안에서 이만큼 기다립니다. 60초 한도 안이면 더 늘려도 됩니다.
 const GEMINI_TIMEOUT_MS = 17000;
 const HEARTBEAT_MS = 3000; // 기다리는 동안 공백 한 칸씩 흘려 연결이 끊기지 않게 합니다
+
+// 분당 한도(429)에 걸렸을 때 한 번은 기다렸다 다시 걸어봅니다.
+// 구글이 RetryInfo 로 "몇 초 뒤에 오라"고 알려주는데, 보통 십몇 초입니다.
+// 스트리밍 함수 한도가 60초이므로 총 예산을 그 안쪽으로 잡습니다.
+const MAX_RETRY_WAIT_MS = 15000;
+const TOTAL_BUDGET_MS = 50000;
 const ENDPOINT = (m) =>
   `https://generativelanguage.googleapis.com/v1beta/models/${m}:generateContent`;
 
@@ -171,55 +177,110 @@ export default async (req) => {
 };
 
 // Gemini를 부르고, 성공이면 정리된 결과를, 실패면 { error, status }를 돌려줍니다.
+// 분당 한도는 잠깐 기다리면 풀리므로 한 번은 알아서 다시 겁니다.
 async function callGemini(payload) {
-  let res;
-  try {
-    res = await fetch(ENDPOINT(MODEL), {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-goog-api-key': process.env.GEMINI_API_KEY,
-      },
-      body: JSON.stringify(payload),
-      signal: AbortSignal.timeout(GEMINI_TIMEOUT_MS),
-    });
-  } catch (e) {
-    if (e.name === 'TimeoutError' || e.name === 'AbortError') {
+  const started = Date.now();
+  let retried = false;
+
+  for (;;) {
+    let res;
+    try {
+      res = await fetch(ENDPOINT(MODEL), {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-goog-api-key': process.env.GEMINI_API_KEY,
+        },
+        body: JSON.stringify(payload),
+        signal: AbortSignal.timeout(GEMINI_TIMEOUT_MS),
+      });
+    } catch (e) {
+      if (e.name === 'TimeoutError' || e.name === 'AbortError') {
+        return {
+          error: `분석이 ${GEMINI_TIMEOUT_MS / 1000}초를 넘겨 중단했습니다. 문장을 짧게 나눠서 넣어보세요.`,
+          status: 504,
+        };
+      }
+      throw e;
+    }
+
+    const raw = await res.text();
+    let data = null;
+    try { data = JSON.parse(raw); } catch { /* JSON이 아님 */ }
+
+    if (res.status === 429) {
+      const q = readQuota(data);
+
+      // 하루 한도는 기다려도 안 풀립니다. 태평양 시간 자정에 초기화됩니다.
+      if (q.perDay) {
+        return {
+          error: `무료 티어 하루 한도(${q.limit || '?'}건)를 다 썼습니다. `
+            + '태평양 시간 자정에 초기화됩니다. 계속 쓰려면 결제를 연결하거나 가벼운 모델로 바꾸세요.',
+          status: 429,
+        };
+      }
+
+      const wait = Math.min(q.retryMs ?? 12000, MAX_RETRY_WAIT_MS);
+      const room = TOTAL_BUDGET_MS - (Date.now() - started) - wait - GEMINI_TIMEOUT_MS;
+      if (!retried && room > 0) {
+        retried = true;
+        await sleep(wait);
+        continue;
+      }
       return {
-        error: `분석이 ${GEMINI_TIMEOUT_MS / 1000}초를 넘겨 중단했습니다. 문장을 짧게 나눠서 넣어보세요.`,
-        status: 504,
+        error: `무료 티어 분당 한도(${q.limit || '분당 요청 수'})에 걸렸습니다. `
+          + `${Math.ceil(wait / 1000)}초쯤 뒤에 다시 시도하세요.`,
+        status: 429,
       };
     }
-    throw e;
+
+    if (!res.ok) {
+      return {
+        error: data?.error?.message || `Gemini가 ${res.status}로 응답했습니다. ${raw.slice(0, 120)}`,
+        status: 502,
+      };
+    }
+
+    const out = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+    if (!out) {
+      const reason = data?.candidates?.[0]?.finishReason;
+      const msg = reason === 'SAFETY'
+        ? '안전 필터에 걸린 입력입니다.'
+        : reason === 'MAX_TOKENS'
+          ? '문장이 너무 길어 결과가 잘렸습니다. 짧게 나눠서 넣어주세요.'
+          : `빈 응답을 받았습니다. (${reason || '이유 불명'})`;
+      return { error: msg, status: 502 };
+    }
+
+    return normalize(JSON.parse(out));
   }
+}
 
-  if (res.status === 429) {
-    return { error: '무료 티어 분당 한도에 걸렸습니다. 20초쯤 뒤에 다시 시도하세요.', status: 429 };
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * 429 본문에서 어떤 한도에 걸렸는지 읽어냅니다.
+ * 구글은 details 에 QuotaFailure(어떤 할당량을 얼마나) 와 RetryInfo(언제 다시) 를 같이 담아 보냅니다.
+ * 분당인지 하루인지에 따라 할 수 있는 일이 다르므로 꼭 구분해야 합니다.
+ */
+function readQuota(data) {
+  const details = data?.error?.details || [];
+  const out = { perDay: false, limit: '', retryMs: null };
+
+  for (const d of details) {
+    const type = String(d['@type'] || '');
+    if (type.endsWith('QuotaFailure')) {
+      const v = d.violations?.[0];
+      const id = String(v?.quotaId || v?.quotaMetric || '');
+      if (/PerDay|per_day/i.test(id)) out.perDay = true;
+      if (v?.quotaValue) out.limit = String(v.quotaValue);
+    }
+    if (type.endsWith('RetryInfo')) {
+      const m = /([\d.]+)s/.exec(String(d.retryDelay || ''));
+      if (m) out.retryMs = Math.ceil(Number(m[1]) * 1000);
+    }
   }
-
-  const raw = await res.text();
-  let data = null;
-  try { data = JSON.parse(raw); } catch { /* JSON이 아님 */ }
-
-  if (!res.ok) {
-    return {
-      error: data?.error?.message || `Gemini가 ${res.status}로 응답했습니다. ${raw.slice(0, 120)}`,
-      status: 502,
-    };
-  }
-
-  const out = data?.candidates?.[0]?.content?.parts?.[0]?.text;
-  if (!out) {
-    const reason = data?.candidates?.[0]?.finishReason;
-    const msg = reason === 'SAFETY'
-      ? '안전 필터에 걸린 입력입니다.'
-      : reason === 'MAX_TOKENS'
-        ? '문장이 너무 길어 결과가 잘렸습니다. 짧게 나눠서 넣어주세요.'
-        : `빈 응답을 받았습니다. (${reason || '이유 불명'})`;
-    return { error: msg, status: 502 };
-  }
-
-  return normalize(JSON.parse(out));
+  return out;
 }
 
 // 스키마가 있어도 선택 필드는 빠질 수 있으니 클라이언트가 믿고 쓸 모양으로 맞춰줍니다.

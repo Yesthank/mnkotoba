@@ -26,7 +26,12 @@ const POS_KO = {
 };
 
 const HISTORY_LIMIT = 20;
-const GAP_MS = 600; // 무료 티어 분당 한도에 걸리지 않게 요청 사이에 두는 간격
+const GAP_MS = 600; // 연속 호출 사이에 두는 최소 간격
+
+// 무료 티어는 분당 요청 수를 셉니다(기본 10). 한도를 넘기면 429가 떨어지고 그 문장은 실패로 남습니다.
+// 그래서 넘길 것 같으면 보내기 전에 창이 열릴 때까지 기다립니다. 한도 안에서는 기다리지 않습니다.
+const RPM_LIMIT = Number(import.meta.env.VITE_GEMINI_RPM) || 10;
+const RPM_WINDOW_MS = 60000;
 const uid = () => Math.random().toString(36).slice(2, 10);
 
 // 카드 뜻에는 사전형 뜻만 넣고, 원문에서 어떤 꼴로 나왔는지는 메모로 남깁니다.
@@ -49,6 +54,7 @@ export default function Analyzer({ decks, activeDeckId, savedKeys, onSave, onToa
 
   const runningRef = useRef(false);
   const abortRef = useRef(null);
+  const sentRef = useRef([]); // 최근에 보낸 시각. 분당 한도를 셉니다
   const textRef = useRef(null);
   const caretRef = useRef(null); // [시작, 끝]
 
@@ -72,6 +78,17 @@ export default function Analyzer({ decks, activeDeckId, savedKeys, onSave, onToa
     (async () => {
       let patch;
       try {
+        // 분당 한도가 찼으면 가장 오래된 요청이 창 밖으로 밀려날 때까지 기다립니다.
+        const now = Date.now();
+        const recent = sentRef.current.filter((t) => now - t < RPM_WINDOW_MS);
+        if (recent.length >= RPM_LIMIT) {
+          const wait = RPM_WINDOW_MS - (now - recent[0]) + 250;
+          setJobs((js) => js.map((j) => (j.id === next.id ? { ...j, hold: Date.now() + wait } : j)));
+          await sleep(wait);
+          if (ctrl.signal.aborted) throw Object.assign(new Error('취소'), { name: 'AbortError' });
+        }
+        sentRef.current = [...recent, Date.now()];
+
         const result = await analyze({ text: next.text, image: next.image, signal: ctrl.signal });
         patch = { status: 'done', result };
       } catch (err) {
@@ -84,7 +101,7 @@ export default function Analyzer({ decks, activeDeckId, savedKeys, onSave, onToa
       setJobs((js) =>
         patch.status === 'cancelled'
           ? js.filter((j) => j.id !== next.id)
-          : js.map((j) => (j.id === next.id ? { ...j, ...patch } : j)),
+          : js.map((j) => (j.id === next.id ? { ...j, hold: null, ...patch } : j)),
       );
 
       await sleep(GAP_MS);
@@ -289,7 +306,9 @@ export default function Analyzer({ decks, activeDeckId, savedKeys, onSave, onToa
             <div className="qitem" key={j.id}>
               <span className={`qdot ${j.status === 'running' ? 'qdot-live' : ''}`} />
               <span className="qlabel">{j.label}</span>
-              <span className="qstatus">{j.status === 'running' ? '읽는 중' : '대기'}</span>
+              <span className="qstatus">
+                {j.hold ? '분당 한도 대기' : j.status === 'running' ? '읽는 중' : '대기'}
+              </span>
               <button className="btn-quiet" onClick={() => cancel(j.id)} aria-label="취소">×</button>
             </div>
           ))}
